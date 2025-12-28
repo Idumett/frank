@@ -1,28 +1,21 @@
 import 'dotenv/config';
 import Fastify from 'fastify';
-import { PerceptionResultSchema, type PerceptionResult } from '@frank/contracts';
+import { AssistantReplySchema, type AssistantReply } from '@frank/contracts';
 
 const app = Fastify({
   logger: true,
 });
 
-app.get('/health', async () => {
-  return { ok: true };
-});
-
-// Temporary endpoint: returns a mocked PerceptionResult to prove the wiring works
-app.post('/v1/analyze', async (_req, _reply) => {
-  const result: PerceptionResult = {
-    text: 'Hello from Frank (mock).',
-    textConfidence: 0.99,
-    labels: [{ name: 'demo', confidence: 1.0 }],
-    capturedAt: new Date().toISOString(),
-    imageQuality: 'good',
-    provider: 'mock',
+app.post('/v1/analyze', async () => {
+  const reply: AssistantReply = {
+    trace: { requestId: crypto.randomUUID() },
+    speak: 'Hello, I am Frank.',
+    createdAt: new Date().toISOString(),
+    groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 },
+    suggestedAction: 'none',
   };
 
-  // Runtime validation (protects from bugs when providers change)
-  return PerceptionResultSchema.parse(result);
+  return AssistantReplySchema.parse(reply);
 });
 
 const port = Number(process.env.PORT ?? 3000);
