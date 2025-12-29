@@ -5,20 +5,20 @@ import crypto from 'node:crypto';
 
 import {
   AssistantReplySchema,
-  type AssistantReply,
   MemoryItemSchema,
-  type MemoryItem,
+  PerceptionResultSchema,
   UserRequestSchema,
+  type AssistantReply,
+  type PerceptionResult,
+  type MemoryItem,
 } from '@frank/contracts';
 
 import { addMemory, deleteMemory, searchMemory, listRecent } from './memoryStore.js';
 
-const app = Fastify({
-  logger: {
-    level: process.env.LOG_LEVEL ?? 'info',
-  },
+import { GcvVisionProvider, GeminiLlmProvider, GoogleTtsProvider } from '@frank/providers';
 
-  // Ensure every request has a requestId (Fastify uses it in logs)
+const app = Fastify({
+  logger: { level: process.env.LOG_LEVEL ?? 'info' },
   genReqId: (req) => {
     const incoming = req.headers['x-request-id'];
     if (typeof incoming === 'string' && incoming.length >= 8) return incoming;
@@ -28,92 +28,112 @@ const app = Fastify({
 
 await app.register(sensible);
 
-// A tiny hook to make requestId obvious in responses too
 app.addHook('onSend', async (req, reply) => {
   reply.header('x-request-id', req.id);
 });
 
-// ---------- Health ----------
-app.get('/health', async (req) => {
-  req.log.info({ requestId: req.id }, 'health check');
-  return { ok: true };
-});
+// Providers (singletons)
+const vision = new GcvVisionProvider();
+const llm = new GeminiLlmProvider({ model: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash' });
+const tts = new GoogleTtsProvider();
 
-// ---------- /v1/analyze ----------
-// For skeleton: accept JSON with a base64 image string.
-// Later: support multipart/form-data (file upload) or stream.
+app.get('/health', async () => ({ ok: true }));
+
 app.post('/v1/analyze', async (req) => {
+  const { z } = await import('zod');
+
   const BodySchema = UserRequestSchema.extend({
-    imageBase64: (await import('zod')).z.string().min(10), // simple placeholder
+    imageBase64: z.string().min(10),
+    // Optional: let client request audio or not
+    wantAudio: z.boolean().default(true),
   });
 
   const body = BodySchema.parse(req.body);
+  const now = new Date().toISOString();
+
+  const imageBytes = Buffer.from(body.imageBase64, 'base64');
 
   req.log.info(
-    {
-      requestId: req.id,
-      intent: body.intent,
-      modality: body.modality,
-      hasImage: body.hasImage,
-    },
+    { requestId: req.id, intent: body.intent, modality: body.modality },
     'analyze request received',
   );
 
-  // TODO: real flow later
-  // 1) quality gating
-  // 2) call GCV OCR + labels
-  // 3) policy decision
-  // 4) LLM response
-  // 5) memory store decision
+  // 1) Vision calls in parallel (Google Cloud Vision)
+  const [ocrRes, labelsRes] = await Promise.all([
+    vision.analyzeOCR({ trace: body.trace, imageBytes, capturedAt: now }),
+    vision.analyzeLabels({ trace: body.trace, imageBytes, capturedAt: now }),
+  ]);
 
-  // For now, generate a mocked reply + mock memory item
-  const now = new Date().toISOString();
+  // 2) Merge into one PerceptionResult (your contract)
+  const perception: PerceptionResult = PerceptionResultSchema.parse({
+    trace: body.trace,
+    provider: 'gcv',
+    capturedAt: now,
+    imageQuality: 'ok',
+    imageQualityNotes: [],
+    ocr: ocrRes.ocr,
+    labels: labelsRes.labels ?? [],
+  });
 
-  // Example: store a memory item only if intent suggests it
-  const shouldStore = body.intent === 'remember_this';
+  // 3) Memory hits (simple keyword for now)
+  // Later you’ll replace this with embeddings.
+  const memoryHits =
+    body.intent === 'recall' && body.query
+      ? searchMemory(body.query)
+          .slice(0, 5)
+          .map((m) => `${m.title}: ${m.content}`)
+      : [];
 
-  if (shouldStore) {
-    const memoryItem: MemoryItem = {
+  // 4) LLM reply (Gemini) grounded in perception + memory hits
+  const reply: AssistantReply = await llm.generateReply({
+    trace: body.trace,
+    userUtterance: body.utterance,
+    perception,
+    memoryHits,
+    now,
+  });
+
+  AssistantReplySchema.parse(reply);
+
+  // 5) Store memory (only for remember_this in this skeleton)
+  if (body.intent === 'remember_this') {
+    const item: MemoryItem = {
       id: crypto.randomUUID(),
       type: 'mixed',
-      title: 'Captured item (mock)',
-      content: `Mock content stored from request: ${body.utterance ?? '(no utterance)'}`,
-      tags: ['mock'],
+      title: perception.labels[0]?.name ?? 'Captured item',
+      content: perception.ocr?.fullText?.trim() || reply.speak,
+      tags: ['frank'],
       createdAt: now,
       trace: body.trace,
     };
-
-    // Validate contract
-    MemoryItemSchema.parse(memoryItem);
-    addMemory(memoryItem);
-
-    req.log.info({ requestId: req.id, memoryId: memoryItem.id }, 'memory stored (mock)');
+    MemoryItemSchema.parse(item);
+    addMemory(item);
   }
 
-  const reply: AssistantReply = {
-    trace: body.trace,
-    speak:
-      body.intent === 'read_text'
-        ? 'I am ready to read. (Mock response)'
-        : body.intent === 'describe_scene'
-          ? 'I can describe what is in front of you. (Mock response)'
-          : body.intent === 'remember_this'
-            ? 'Okay. I will remember this. (Mock response)'
-            : body.intent === 'recall'
-              ? 'Tell me what you want me to recall. (Mock response)'
-              : 'How can I help? (Mock response)',
-    followUpQuestion:
-      body.intent === 'remember_this' ? 'Do you want to add a tag for this?' : undefined,
-    suggestedAction: body.intent === 'remember_this' ? 'store_memory' : 'none',
-    createdAt: now,
-    groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 },
-  };
+  // 6) TTS (Google Cloud Text-to-Speech)
+  let audioBase64: string | undefined;
+  let mimeType: string | undefined;
 
-  // Validate and return
-  return AssistantReplySchema.parse(reply);
+  if (body.wantAudio) {
+    const audio = await tts.speak({
+      trace: body.trace,
+      text: reply.speak,
+      languageCode: 'en-GB',
+    });
+    audioBase64 = audio.audioBytes.toString('base64');
+    mimeType = audio.mimeType;
+  }
+
+  return {
+    trace: body.trace,
+    perception,
+    reply,
+    audioBase64,
+    mimeType,
+  };
 });
 
-// ---------- /v1/memory/search ----------
+// memory endpoints stay the same as you already set up...
 app.post('/v1/memory/search', async (req) => {
   const { z } = await import('zod');
 
@@ -122,14 +142,7 @@ app.post('/v1/memory/search', async (req) => {
     query: z.string().min(1),
     limit: z.number().min(1).max(50).default(10),
   });
-
   const body = BodySchema.parse(req.body);
-
-  req.log.info(
-    { requestId: req.id, query: body.query, limit: body.limit },
-    'memory search requested',
-  );
-
   const matches = searchMemory(body.query).slice(0, body.limit);
 
   return {
@@ -139,7 +152,6 @@ app.post('/v1/memory/search', async (req) => {
   };
 });
 
-// ---------- /v1/memory/delete ----------
 app.post('/v1/memory/delete', async (req) => {
   const { z } = await import('zod');
 
@@ -147,19 +159,16 @@ app.post('/v1/memory/delete', async (req) => {
     trace: UserRequestSchema.shape.trace,
     ids: z.array(z.string().min(1)).min(1).max(100),
   });
-
   const body = BodySchema.parse(req.body);
-
   const deleted = deleteMemory(body.ids);
-  req.log.info({ requestId: req.id, deleted }, 'memory delete performed');
 
   return { trace: body.trace, deleted };
 });
 
-// (Optional) handy endpoint for dev: recent memory
 app.get('/v1/memory/recent', async (req) => {
   const limit = Number((req.query as any)?.limit ?? 10);
   const items = listRecent(Math.min(Math.max(limit, 1), 50));
+
   return { count: items.length, items };
 });
 
