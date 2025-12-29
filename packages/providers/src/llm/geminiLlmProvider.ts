@@ -12,8 +12,11 @@ export class GeminiLlmProvider implements LlmProvider {
   private model: string;
 
   constructor(opts?: { model?: string }) {
-    // Uses GEMINI_API_KEY from env by default, per SDK docs.
-    this.ai = new GoogleGenAI({});
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) throw new Error('GEMINI_API_KEY is not set');
+
+    // Force API-key auth, avoid ADC scope issues
+    this.ai = new GoogleGenAI({ apiKey });
     this.model = opts?.model ?? 'gemini-2.5-flash';
   }
 
