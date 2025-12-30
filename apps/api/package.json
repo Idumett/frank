@@ -12,6 +12,7 @@
   "dependencies": {
     "@fastify/sensible": "^6.0.4",
     "@frank/contracts": "workspace:*",
+    "@frank/core": "workspace:*",
     "@frank/providers": "workspace:*",
     "dotenv": "^17.2.3",
     "fastify": "^5.6.2",

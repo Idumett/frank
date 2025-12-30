@@ -3,19 +3,9 @@ import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import crypto from 'node:crypto';
 
-import {
-  AssistantReplySchema,
-  MemoryItemSchema,
-  PerceptionResultSchema,
-  UserRequestSchema,
-  type AssistantReply,
-  type PerceptionResult,
-  type MemoryItem,
-} from '@frank/contracts';
-
-import { addMemory, deleteMemory, searchMemory, listRecent } from './memoryStore.js';
-
-import { GcvVisionProvider, GeminiLlmProvider, GoogleTtsProvider } from '@frank/providers';
+import { MemoryItemSchema, UserRequestSchema } from '@frank/contracts';
+import { deleteMemory, searchMemory, listRecent } from './memoryStore.js';
+import { makeFrank } from './coreWiring.js';
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL ?? 'info' },
@@ -25,6 +15,7 @@ const app = Fastify({
     return crypto.randomUUID();
   },
 });
+const frank = makeFrank();
 
 await app.register(sensible);
 
@@ -32,108 +23,22 @@ app.addHook('onSend', async (req, reply) => {
   reply.header('x-request-id', req.id);
 });
 
-// Providers (singletons)
-const vision = new GcvVisionProvider();
-const llm = new GeminiLlmProvider({ model: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash' });
-const tts = new GoogleTtsProvider();
-
 app.get('/health', async () => ({ ok: true }));
 
 app.post('/v1/analyze', async (req) => {
   const { z } = await import('zod');
-
   const BodySchema = UserRequestSchema.extend({
     imageBase64: z.string().min(10),
-    // Optional: let client request audio or not
-    wantAudio: z.boolean().default(true),
+    wantAudio: z.boolean().default(false),
   });
 
   const body = BodySchema.parse(req.body);
-  const now = new Date().toISOString();
-
   const imageBytes = Buffer.from(body.imageBase64, 'base64');
 
-  req.log.info(
-    { requestId: req.id, intent: body.intent, modality: body.modality },
-    'analyze request received',
-  );
-
-  // 1) Vision calls in parallel (Google Cloud Vision)
-  const [ocrRes, labelsRes] = await Promise.all([
-    vision.analyzeOCR({ trace: body.trace, imageBytes, capturedAt: now }),
-    vision.analyzeLabels({ trace: body.trace, imageBytes, capturedAt: now }),
-  ]);
-
-  // 2) Merge into one PerceptionResult (your contract)
-  const perception: PerceptionResult = PerceptionResultSchema.parse({
-    trace: body.trace,
-    provider: 'gcv',
-    capturedAt: now,
-    imageQuality: 'ok',
-    imageQualityNotes: [],
-    ocr: ocrRes.ocr,
-    labels: labelsRes.labels ?? [],
-  });
-
-  // 3) Memory hits (simple keyword for now)
-  // Later you’ll replace this with embeddings.
-  const memoryHits =
-    body.intent === 'recall' && body.query
-      ? searchMemory(body.query)
-          .slice(0, 5)
-          .map((m) => `${m.title}: ${m.content}`)
-      : [];
-
-  // 4) LLM reply (Gemini) grounded in perception + memory hits
-  const reply: AssistantReply = await llm.generateReply({
-    trace: body.trace,
-    userUtterance: body.utterance,
-    perception,
-    memoryHits,
-    now,
-  });
-
-  AssistantReplySchema.parse(reply);
-
-  // 5) Store memory (only for remember_this in this skeleton)
-  if (body.intent === 'remember_this') {
-    const item: MemoryItem = {
-      id: crypto.randomUUID(),
-      type: 'mixed',
-      title: perception.labels[0]?.name ?? 'Captured item',
-      content: perception.ocr?.fullText?.trim() || reply.speak,
-      tags: ['frank'],
-      createdAt: now,
-      trace: body.trace,
-    };
-    MemoryItemSchema.parse(item);
-    addMemory(item);
-  }
-
-  // 6) TTS (Google Cloud Text-to-Speech)
-  let audioBase64: string | undefined;
-  let mimeType: string | undefined;
-
-  if (body.wantAudio) {
-    const audio = await tts.speak({
-      trace: body.trace,
-      text: reply.speak,
-      languageCode: 'en-GB',
-    });
-    audioBase64 = audio.audioBytes.toString('base64');
-    mimeType = audio.mimeType;
-  }
-
-  return {
-    trace: body.trace,
-    perception,
-    reply,
-    audioBase64,
-    mimeType,
-  };
+  const reply = await frank.handleUserRequest(body, imageBytes);
+  return { trace: body.trace, reply };
 });
 
-// memory endpoints stay the same as you already set up...
 app.post('/v1/memory/search', async (req) => {
   const { z } = await import('zod');
 

@@ -35,6 +35,9 @@ importers:
       '@frank/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@frank/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@frank/providers':
         specifier: workspace:*
         version: link:../../packages/providers
@@ -49,6 +52,19 @@ importers:
         version: 4.2.1
 
   packages/contracts: {}
+
+  packages/core:
+    dependencies:
+      '@frank/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@frank/providers':
+        specifier: workspace:*
+        version: link:../providers
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
 
   packages/providers:
     dependencies:
