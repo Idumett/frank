@@ -2,12 +2,13 @@ import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import crypto from 'node:crypto';
 
-import { MemoryItem, UserRequestSchema } from '@frank/contracts';
+import { AssistantReplySchema, MemoryItem, UserRequestSchema } from '@frank/contracts';
 import { makeFrank } from './coreWiring.js';
 import { migrate } from './db/migrate.js';
 import { SqliteMemoryStore } from './db/sqliteMemoryStore.js';
 import { sttRoutes } from './routes/stt.js';
 import { ttsRoutes } from './routes/tts.js';
+import { checkCooldown } from './rateLimit.js';
 
 migrate();
 const sqlite = new SqliteMemoryStore();
@@ -55,7 +56,50 @@ app.post('/v1/analyze', async (req) => {
   const body = BodySchema.parse(req.body);
   const imageBytes = Buffer.from(body.imageBase64, 'base64');
 
+  const key =
+    body.trace.sessionId ?? body.trace.requestId ?? (req.ip ? `ip:${req.ip}` : `req:${req.id}`);
+  const cooldownMs = Number(process.env.COOLDOWN_MS ?? 1200);
+  const cd = checkCooldown(key, cooldownMs);
+  if (!cd.allowed) {
+    const now = new Date().toISOString();
+
+    req.log.info({ requestId: req.id, cooldownKey: key, waitMs: cd.waitMs }, 'cooldown_blocked');
+
+    const reply = AssistantReplySchema.parse({
+      trace: body.trace,
+      speak: 'One moment. Try again.',
+      createdAt: now,
+      suggestedAction: 'none',
+      groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 },
+    });
+
+    return { trace: body.trace, reply, blockedByCooldown: true, waitMs: cd.waitMs };
+  }
+
+  // Structured logs: intent, modality, image size
+  req.log.info(
+    {
+      requestId: req.id,
+      intent: body.intent,
+      modality: body.modality,
+      imageBytes: imageBytes.length,
+    },
+    'analyze_start',
+  );
+
   const reply = await frank.handleUserRequest(body, imageBytes);
+  req.log.info(
+    {
+      requestId: req.id,
+      intent: body.intent,
+      suggestedAction: reply.suggestedAction,
+      usedOcr: reply.groundedIn?.usedOcr,
+      usedLabels: reply.groundedIn?.usedLabels,
+      usedMemoryHits: reply.groundedIn?.usedMemoryHits,
+    },
+    'analyze_done',
+  );
+
   return { trace: body.trace, reply };
 });
 

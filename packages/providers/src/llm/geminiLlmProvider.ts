@@ -29,11 +29,16 @@ export class GeminiLlmProvider implements LlmProvider {
   }): Promise<AssistantReply> {
     const ocrText = args.perception.ocr?.fullText?.trim() ?? '';
     const labels = (args.perception.labels ?? []).map((l) => l.name).slice(0, 8);
+    const weakVision = !(ocrText && ocrText.length > 5) && labels.length === 0;
 
     const prompt = [
       `You are Frank, a personal visual reasoning assistant for blind users.`,
-      `You MUST only use the facts provided in OCR text, labels, and memory hits.`,
-      `If you are unsure or the text seems incomplete, say you are not sure and ask to recapture.`,
+      `Speak in VERY short sentences. Max 3 sentences.`,
+      `Each sentence should be under 12 words.`,
+      `Do NOT invent details.`,
+      `Only use OCR text, labels, and memory hits.`,
+      `If the image is unclear, say so briefly and ask for recapture.`,
+      weakVision ? `IMAGE_STATUS: UNCLEAR` : `IMAGE_STATUS: OK`,
       ``,
       `USER QUESTION: ${args.userUtterance ?? '(none)'}`,
       `OCR TEXT: ${ocrText || '(none)'}`,

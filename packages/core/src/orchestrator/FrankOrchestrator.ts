@@ -10,6 +10,8 @@ import {
 } from '@frank/contracts';
 
 import type { FrankDeps } from './types.js';
+import { CallBudget } from './guardrails/callBudget.js';
+import { applyConfidenceTone, enforceShortReply } from './guardrails/shortReply.js';
 
 export class FrankOrchestrator {
   constructor(private deps: FrankDeps) {}
@@ -21,10 +23,15 @@ export class FrankOrchestrator {
   async handleUserRequest(request: UserRequest, imageBytes: Buffer): Promise<AssistantReply> {
     const now = new Date().toISOString();
 
-    // 1) Quality gating
+    const budget = new CallBudget({ maxVisionCalls: 2, maxLlmCalls: 1 });
+
+    // 1) Quality gating (cheap)
     const quality = await this.deps.quality.assess(imageBytes);
 
-    // 2) Vision calls (parallel)
+    // 2) Vision calls (parallel) - count calls
+    budget.useVisionCall();
+    budget.useVisionCall();
+
     const [ocrRes, labelsRes] = await Promise.all([
       this.deps.vision.analyzeOCR({ trace: request.trace, imageBytes, capturedAt: now }),
       this.deps.vision.analyzeLabels({ trace: request.trace, imageBytes, capturedAt: now }),
@@ -33,7 +40,7 @@ export class FrankOrchestrator {
     // 3) Merge into one PerceptionResult (contract)
     const perception: PerceptionResult = PerceptionResultSchema.parse({
       trace: request.trace,
-      provider: 'gcv', // still OK; provider-agnostic later if we pass through
+      provider: 'gcv',
       capturedAt: now,
       imageQuality: quality.imageQuality,
       imageQualityNotes: quality.notes,
@@ -59,7 +66,7 @@ export class FrankOrchestrator {
     if (policy.nextAction === 'request_recapture') {
       const reply: AssistantReply = {
         trace: request.trace,
-        speak: policy.recapturePrompt ?? 'Please try capturing again.',
+        speak: enforceShortReply(policy.recapturePrompt ?? 'Please try capturing again.'),
         createdAt: now,
         suggestedAction: 'recapture',
         groundedIn: {
@@ -72,6 +79,25 @@ export class FrankOrchestrator {
     }
 
     // 6) Generate spoken reply (LLM; grounded)
+    if (!policy.allowLlmCall) {
+      // Deterministic fallback if LLM disabled by policy
+      const fallback = 'Not sure. Try moving closer.';
+      const reply: AssistantReply = {
+        trace: request.trace,
+        speak: enforceShortReply(fallback),
+        createdAt: now,
+        suggestedAction: 'recapture',
+        groundedIn: {
+          usedOcr: Boolean(perception.ocr?.fullText?.trim()),
+          usedLabels: (perception.labels?.length ?? 0) > 0,
+          usedMemoryHits: memoryHits.length,
+        },
+      };
+      return AssistantReplySchema.parse(reply);
+    }
+
+    budget.useLlmCall();
+
     const compactMemoryHits = memoryHits.map((m) => `${m.title}: ${m.content}`).slice(0, 5);
 
     const llmReply = await this.deps.llm.generateReply({
@@ -82,10 +108,31 @@ export class FrankOrchestrator {
       now,
     });
 
-    const reply = AssistantReplySchema.parse(llmReply);
+    // confidence language + hard shorten
+    const toned = applyConfidenceTone({
+      text: llmReply.speak,
+      confidence: policy.confidence ?? 'medium',
+      recaptureHint: policy.recapturePrompt
+        ? // keep the hint short
+          'Move closer.'
+        : undefined,
+    });
 
-    // 7) Store memory (policy-controlled)
-    if (policy.shouldStore) {
+    const speak = enforceShortReply(toned);
+
+    const reply: AssistantReply = AssistantReplySchema.parse({
+      ...llmReply,
+      speak,
+      // Keep the reply deterministic in suggestedAction for low confidence
+      suggestedAction:
+        policy.confidence === 'low' ? 'recapture' : (llmReply.suggestedAction ?? 'none'),
+    });
+
+    // 7) Store memory (guardrail: DO NOT store when confidence is low)
+    // Jarvis mode helps even if unclear, but we avoid dirty memory.
+    const canStore = policy.shouldStore && policy.confidence !== 'low';
+
+    if (canStore) {
       const title = perception.labels?.[0]?.name ?? 'Captured item';
       const content = perception.ocr?.fullText?.trim() || reply.speak;
 
@@ -100,8 +147,6 @@ export class FrankOrchestrator {
       };
 
       MemoryItemSchema.parse(item);
-
-      // For V1 you can store immediately; later you can require confirmation.
       await this.deps.memory.add(item);
     }
 
