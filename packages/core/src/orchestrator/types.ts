@@ -10,6 +10,8 @@ import type {
 export interface MemoryStore {
   add(item: MemoryItem): Promise<void>;
   search(query: string, limit: number): Promise<MemoryItem[]>;
+  recent(limit: number): Promise<MemoryItem[]>;
+  delete(ids: string[]): Promise<number>;
 }
 
 export interface PolicyEngine {

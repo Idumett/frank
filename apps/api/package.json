@@ -14,8 +14,12 @@
     "@frank/contracts": "workspace:*",
     "@frank/core": "workspace:*",
     "@frank/providers": "workspace:*",
+    "better-sqlite3": "^12.5.0",
     "dotenv": "^17.2.3",
     "fastify": "^5.6.2",
     "zod": "^4.2.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13"
   }
 }
