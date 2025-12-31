@@ -6,6 +6,8 @@ import { MemoryItem, UserRequestSchema } from '@frank/contracts';
 import { makeFrank } from './coreWiring.js';
 import { migrate } from './db/migrate.js';
 import { SqliteMemoryStore } from './db/sqliteMemoryStore.js';
+import { sttRoutes } from './routes/stt.js';
+import { ttsRoutes } from './routes/tts.js';
 
 migrate();
 const sqlite = new SqliteMemoryStore();
@@ -87,6 +89,10 @@ app.get('/v1/memory/recent', async (req) => {
   const items = await memoryStore.recent(limit);
   return { count: items.length, items };
 });
+
+// Visit docs/voice-summary.md for explanation
+await sttRoutes(app);
+await ttsRoutes(app);
 
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '0.0.0.0';
