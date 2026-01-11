@@ -7,14 +7,24 @@
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
     "format": "prettier -w .",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "frank:console": "tsx tests/cli/frank-console.ts"
   },
   "devDependencies": {
     "@types/node": "^25.0.3",
     "eslint": "^9.39.2",
     "eslint-config-prettier": "^10.1.8",
+    "inquirer": "^13.1.0",
     "prettier": "^3.7.4",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.16"
+  },
+  "dependencies": {
+    "@frank/contracts": "workspace:*",
+    "@frank/core": "workspace:*",
+    "@frank/providers": "workspace:*"
   }
 }

@@ -69,22 +69,65 @@ export class SqliteMemoryStore {
     const q = query.trim().toLowerCase();
     if (!q) return Promise.resolve([]);
 
-    // Simple keyword search with LIKE (v1)
-    // Later: FTS5 or embeddings-based semantic search
-    const like = `%${q}%`;
+    // 1) tokenize: remove punctuation, split words
+    const tokens = q
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(Boolean)
+      .filter((t) => t.length >= 3);
+
+    // 2) remove common filler words (tiny stoplist)
+    const STOP = new Set([
+      'the',
+      'and',
+      'for',
+      'with',
+      'this',
+      'that',
+      'what',
+      'does',
+      'have',
+      'to',
+      'you',
+      'your',
+      'from',
+      'into',
+      'about',
+      'are',
+      'was',
+      'were',
+      'will',
+      'can',
+      'could',
+      'should',
+      'would',
+    ]);
+    const keywords = tokens.filter((t) => !STOP.has(t));
+
+    // If everything got filtered out, fall back to raw
+    const finalTokens = (keywords.length ? keywords : tokens).slice(0, 6);
+    if (finalTokens.length === 0) return Promise.resolve([]);
+
+    // 3) Build SQL: OR match any token (good starter behavior)
+    // We can switch OR -> AND later stricter matching
+    const whereParts: string[] = [];
+    const params: any[] = [];
+
+    for (const t of finalTokens) {
+      whereParts.push(`LOWER(title) LIKE ? OR LOWER(content) LIKE ? OR LOWER(tags_json) LIKE ?`);
+      const like = `%${t}%`;
+      params.push(like, like, like);
+    }
 
     const stmt = this.db.prepare(`
       SELECT *
       FROM memory_items
-      WHERE
-        LOWER(title) LIKE ? OR
-        LOWER(content) LIKE ? OR
-        LOWER(tags_json) LIKE ?
+      WHERE (${whereParts.join(' OR ')})
       ORDER BY created_at DESC
       LIMIT ?
     `);
 
-    const rows = stmt.all(like, like, like, opts.limit);
+    const rows = stmt.all(...params, opts.limit);
     return Promise.resolve(rows.map(rowToMemoryItem));
   }
 

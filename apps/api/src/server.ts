@@ -2,7 +2,12 @@ import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import crypto from 'node:crypto';
 
-import { AssistantReplySchema, MemoryItem, UserRequestSchema } from '@frank/contracts';
+import {
+  AssistantReplySchema,
+  MemoryItem,
+  MemoryItemSchema,
+  UserRequestSchema,
+} from '@frank/contracts';
 import { makeFrank } from './coreWiring.js';
 import { migrate } from './db/migrate.js';
 import { SqliteMemoryStore } from './db/sqliteMemoryStore.js';
@@ -103,6 +108,23 @@ app.post('/v1/analyze', async (req) => {
   return { trace: body.trace, reply };
 });
 
+app.post('/v1/memory/add', async (req) => {
+  const { z } = await import('zod');
+
+  const BodySchema = z.object({
+    trace: UserRequestSchema.shape.trace,
+    item: MemoryItemSchema,
+  });
+
+  const body = BodySchema.parse(req.body);
+
+  // store in SQLite
+  memoryStore.add(body.item);
+
+  req.log.info({ requestId: req.id, memoryId: body.item.id }, 'memory_add');
+  return { trace: body.trace, ok: true };
+});
+
 app.post('/v1/memory/search', async (req) => {
   const { z } = await import('zod');
   const BodySchema = z.object({
@@ -110,7 +132,6 @@ app.post('/v1/memory/search', async (req) => {
     query: z.string().min(1),
     limit: z.number().min(1).max(50).default(10),
   });
-
   const body = BodySchema.parse(req.body);
   const items = await memoryStore.search(body.query, body.limit);
   return { trace: body.trace ?? { requestId: req.id }, count: items.length, items };

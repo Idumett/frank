@@ -48,11 +48,17 @@ export class FrankOrchestrator {
       labels: labelsRes.labels ?? [],
     });
 
-    // 4) Get memory hits (only if recall-like)
-    const memoryHits =
-      request.intent === 'recall' && request.query
-        ? await this.deps.memory.search(request.query, 5)
-        : [];
+    // 4) Memory hits (Jarvis mode: use memory for ANY meaningful utterance)
+    const userText = request.query?.trim() || request.utterance?.trim() || '';
+    let memoryHits = [] as any[];
+
+    if (userText) {
+      // If user asked anything, search memory using that text
+      memoryHits = await this.deps.memory.search(userText, 5);
+    } else if (request.intent === 'recall') {
+      // recall with no query: just return recent-ish hits (optional)
+      memoryHits = await this.deps.memory.search('', 0); // or implement recent() and use that
+    }
 
     // 5) Policy decision
     const policy = this.deps.policy.decide({
