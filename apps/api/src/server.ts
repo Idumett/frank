@@ -14,6 +14,7 @@ import { SqliteMemoryStore } from './db/sqliteMemoryStore.js';
 import { sttRoutes } from './routes/stt.js';
 import { ttsRoutes } from './routes/tts.js';
 import { checkCooldown } from './rateLimit.js';
+import sharp from 'sharp';
 
 migrate();
 const sqlite = new SqliteMemoryStore();
@@ -35,6 +36,14 @@ const app = Fastify({
 });
 
 await app.register(sensible);
+
+async function normalizeImage(imageBytes: Buffer) {
+  return await sharp(imageBytes)
+    .rotate() // respect EXIF orientation
+    .resize({ width: 1280, height: 1280, fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 80 })
+    .toBuffer();
+}
 
 process.on('SIGINT', () => {
   sqlite.close();
@@ -59,7 +68,7 @@ app.post('/v1/analyze', async (req) => {
   });
 
   const body = BodySchema.parse(req.body);
-  const imageBytes = Buffer.from(body.imageBase64, 'base64');
+  const imageBytes = await normalizeImage(Buffer.from(body.imageBase64, 'base64'));
 
   const key =
     body.trace.sessionId ?? body.trace.requestId ?? (req.ip ? `ip:${req.ip}` : `req:${req.id}`);

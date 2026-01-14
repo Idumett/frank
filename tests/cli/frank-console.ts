@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import inquirer from 'inquirer';
+import sharp from 'sharp';
 
 import type { UserRequest, PerceptionResult, AssistantReply, MemoryItem } from '@frank/contracts';
 import { PerceptionResultSchema } from '@frank/contracts';
@@ -85,6 +86,14 @@ function printReply(reply: AssistantReply, latencyMs: number) {
   console.log('\n' + reply.speak);
 }
 
+async function normalizeImage(imageBytes: Buffer) {
+  return await sharp(imageBytes)
+    .rotate() // respect EXIF orientation
+    .resize({ width: 1280, height: 1280, fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality: 80 })
+    .toBuffer();
+}
+
 async function main() {
   const images = listImages();
   if (images.length === 0) {
@@ -143,7 +152,7 @@ async function main() {
     }
 
     if (action === 'vision') {
-      const imageBytes = readImageBytes(lastImage!);
+      const imageBytes = await normalizeImage(readImageBytes(lastImage!));
       const now = new Date().toISOString();
       const trace = { requestId: crypto.randomUUID(), sessionId };
 

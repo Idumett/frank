@@ -25,6 +25,7 @@
   "dependencies": {
     "@frank/contracts": "workspace:*",
     "@frank/core": "workspace:*",
-    "@frank/providers": "workspace:*"
+    "@frank/providers": "workspace:*",
+    "sharp": "^0.34.5"
   }
 }
