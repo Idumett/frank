@@ -15,10 +15,13 @@ This document describes **what exists today**, **how it’s structured**, and **
 Frank is split into four conceptual layers:
 
 [ Devices / Apps ]
+|
 v
 [ API Adapters (HTTP / WS) ]
+|
 v
 [ Frank Core (Brain) ]
+|
 v
 [ Providers (Vision / LLM / Voice) ]
 
@@ -97,7 +100,7 @@ These defines how devices talk to Frank, independent of providers or internals.
 Frank supports multiple client entry points.
 These are not different products — they are different adapters to the same orchestrator.
 
-# Option 1: Simple client (easiest)
+### Option 1: Simple client (easiest)
 
 **Device** → `/v1/device/frame`
 
@@ -105,7 +108,7 @@ These are not different products — they are different adapters to the same orc
 - server sends audio + metadata back
 - best for v1 hardware
 
-# Option 2: App client (phone/web)
+### Option 2: App client (phone/web)
 
 **Client** → `/v1/analyze + /v1/tts (+ /v1/stt)`
 
@@ -113,7 +116,7 @@ These are not different products — they are different adapters to the same orc
 - flexible playback and interruption handling
 - best for mobile/web apps
 
-# Option 3: Streaming glasses
+### Option 3: Streaming glasses
 
 **Device** → `WS /v1/device/stream`
 
@@ -124,7 +127,7 @@ These are not different products — they are different adapters to the same orc
 Important invariant
 All of these options call the **SAME** orchestrator in the end.
 
-```
+```s
 /v1/analyze
 /v1/device/frame
 WS /v1/device/stream
@@ -133,7 +136,7 @@ WS /v1/device/stream
 FrankOrchestrator.handleUserRequest()
 ```
 
-# 6. Existing API routes (summary)
+## 6. Existing API routes (summary)
 
 **Core / App routes**
 `POST /v1/analyze`
@@ -151,7 +154,7 @@ FrankOrchestrator.handleUserRequest()
 `POST /v1/device/frame`
 `WS /v1/device/stream`
 
-# 7. Guardrails currently implemented
+## 7. Guardrails currently implemented
 
 As of today, Frank includes:
 
@@ -165,7 +168,7 @@ As of today, Frank includes:
 - no memory storage on low confidence
 - structured logging
 
-# 8. What is intentionally NOT built yet
+## 8. What is intentionally NOT built yet
 
 By design, Frank does not yet include:
 
@@ -179,7 +182,7 @@ By design, Frank does not yet include:
 
 These are deferred until UX validation.
 
-# 9. Current development stage
+## 9. Current development stage
 
 Frank is currently at:
 
@@ -193,7 +196,7 @@ Next steps:
 - policy and prompt iteration
 - only then → hardware polish
 
-# 10. Mental model to keep
+## 10. Mental model to keep
 
 `@frank/core` → the brain
 
@@ -205,6 +208,8 @@ Next steps:
 
 `API routes` → adapters, not logic
 
-If you remember nothing else: **Frank is one brain with many mouths and ears.**
+> If you remember nothing else: **Frank is one brain with many mouths and ears.**
+
+---
 
 _End of document — valid as of 2026-01-19_
