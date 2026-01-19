@@ -10,6 +10,7 @@
     "lint": "node -e \"console.log('lint: handled at root for now')\""
   },
   "dependencies": {
+    "@fastify/multipart": "^9.3.0",
     "@fastify/sensible": "^6.0.4",
     "@frank/contracts": "workspace:*",
     "@frank/core": "workspace:*",

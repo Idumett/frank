@@ -13,6 +13,7 @@ import { migrate } from './db/migrate.js';
 import { SqliteMemoryStore } from './db/sqliteMemoryStore.js';
 import { sttRoutes } from './routes/stt.js';
 import { ttsRoutes } from './routes/tts.js';
+import { deviceRoutes } from './routes/device.js';
 import { checkCooldown } from './rateLimit.js';
 import sharp from 'sharp';
 
@@ -167,6 +168,8 @@ app.get('/v1/memory/recent', async (req) => {
 // Visit docs/voice-summary.md for explanation
 await sttRoutes(app);
 await ttsRoutes(app);
+
+await deviceRoutes(app);
 
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '0.0.0.0';
