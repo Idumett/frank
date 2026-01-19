@@ -12,8 +12,10 @@
   "dependencies": {
     "@fastify/multipart": "^9.3.0",
     "@fastify/sensible": "^6.0.4",
+    "@fastify/websocket": "^11.2.0",
     "@frank/contracts": "workspace:*",
     "@frank/core": "workspace:*",
+    "@frank/protocol": "workspace:*",
     "@frank/providers": "workspace:*",
     "better-sqlite3": "^12.5.0",
     "dotenv": "^17.2.3",

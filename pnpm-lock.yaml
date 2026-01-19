@@ -54,12 +54,18 @@ importers:
       '@fastify/sensible':
         specifier: ^6.0.4
         version: 6.0.4
+      '@fastify/websocket':
+        specifier: ^11.2.0
+        version: 11.2.0
       '@frank/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
       '@frank/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@frank/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
       '@frank/providers':
         specifier: workspace:*
         version: link:../../packages/providers
@@ -97,6 +103,8 @@ importers:
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
+
+  packages/protocol: {}
 
   packages/providers:
     dependencies:
@@ -344,6 +352,9 @@ packages:
 
   '@fastify/sensible@6.0.4':
     resolution: {integrity: sha512-1vxcCUlPMew6WroK8fq+LVOwbsLtX+lmuRuqpcp6eYqu6vmkLwbKTdBWAZwbeaSgCfW4tzUpTIHLLvTiQQ1BwQ==}
+
+  '@fastify/websocket@11.2.0':
+    resolution: {integrity: sha512-3HrDPbAG1CzUCqnslgJxppvzaAZffieOVbLp1DAy1huCSynUWPifSvfdEDUR8HlJLp3sp1A36uOM2tJogADS8w==}
 
   '@google-cloud/common@6.0.0':
     resolution: {integrity: sha512-IXh04DlkLMxWgYLIUYuHHKXKOUwPDzDgke1ykkkJPe48cGIS9kkL2U/o0pm4ankHLlvzLF/ma1eO86n/bkumIA==}
@@ -2197,6 +2208,15 @@ snapshots:
       http-errors: 2.0.1
       type-is: 2.0.1
       vary: 1.1.2
+
+  '@fastify/websocket@11.2.0':
+    dependencies:
+      duplexify: 4.1.3
+      fastify-plugin: 5.1.0
+      ws: 8.18.3
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
 
   '@google-cloud/common@6.0.0':
     dependencies:
