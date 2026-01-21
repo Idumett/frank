@@ -24,6 +24,7 @@ export class FrankOrchestrator {
   async handleUserRequest(request: UserRequest, imageBytes: Buffer): Promise<AssistantReply> {
     const now = new Date().toISOString();
 
+    //TODO: Is there a safe fallback if budget is exceeded?
     const budget = new CallBudget({ maxVisionCalls: 2, maxLlmCalls: 1 });
 
     // 1) Quality gating (cheap)
@@ -136,6 +137,7 @@ export class FrankOrchestrator {
     });
 
     // confidence language + hard shorten
+    //TODO: Not just policy.confidence, but reasons,suggestedactions, shouldstore, recaptureprompt and ocrconfidence, are they actually used?(policyDecision)
     const toned = applyConfidenceTone({
       text: llmReply.speak,
       confidence: policy.confidence ?? 'medium',

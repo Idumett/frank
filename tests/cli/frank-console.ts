@@ -152,6 +152,7 @@ async function main() {
     }
 
     if (action === 'vision') {
+      //TODO: Confirm normalizeImage is worth it.
       const imageBytes = await normalizeImage(readImageBytes(lastImage!));
       const now = new Date().toISOString();
       const trace = { requestId: crypto.randomUUID(), sessionId };
@@ -233,6 +234,7 @@ async function main() {
       // Show result clearly
       printReply(reply, latencyMs);
 
+      //TODO: Why have we never been asked to recapture?
       // If recapture recommended, let us immediately try another image as next attempt.
       if (reply.suggestedAction === 'recapture') {
         const { doRecapture } = await inquirer.prompt([

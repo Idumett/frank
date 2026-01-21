@@ -5,6 +5,7 @@ import { GoogleSttProvider } from '@frank/providers';
 
 const stt = new GoogleSttProvider();
 
+//TODO: People talk differently, can we tune each instance to someone's accent(like siri)?
 export async function sttRoutes(app: FastifyInstance) {
   app.post('/v1/stt', async (req) => {
     const BodySchema = z.object({

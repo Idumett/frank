@@ -2,19 +2,10 @@ import type { FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
 import { z } from 'zod';
 
-import { makeFrank } from '../coreWiring.js';
 import { GoogleTtsProvider } from '@frank/providers';
-import { MemoryItem, UserRequestSchema } from '@frank/contracts';
-import { SqliteMemoryStore } from '../db/sqliteMemoryStore.js';
+import { UserRequestSchema } from '@frank/contracts';
+import { FrankOrchestrator } from '@frank/core';
 
-const sqlite = new SqliteMemoryStore();
-const memoryStore = {
-  add: async (item: MemoryItem) => sqlite.add(item),
-  search: async (query: string, limit: number) => sqlite.search(query, { limit }),
-  recent: (limit: number) => sqlite.recent(limit),
-  delete: (ids: string[]) => sqlite.delete(ids),
-};
-const frank = makeFrank(memoryStore);
 const tts = new GoogleTtsProvider();
 
 // ---- Zod schemas for messages (keeps it safe) ----
@@ -56,7 +47,8 @@ function safeSend(conn: any, msg: unknown) {
   }
 }
 
-export async function deviceStreamRoutes(app: FastifyInstance) {
+//TODO: Confirm this and every other new code all points to the same root definitions and doesnt go rogue
+export async function deviceStreamRoutes(app: FastifyInstance, frank: FrankOrchestrator) {
   await app.register(websocket);
 
   app.get('/v1/device/stream', { websocket: true }, (conn, req) => {

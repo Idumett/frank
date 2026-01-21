@@ -57,7 +57,7 @@ describe('Frank fixtures (OCR/object + short replies + recapture behavior)', () 
       if (exp.expectedTextContains && exp.expectedTextContains.length > 0) {
         expect(containsAll(reply.speak, exp.expectedTextContains)).toBe(true);
       }
-
+      // TODO: Test image quality gating
       // If the image is bad, it's OK to ask recapture.
       // But we do want to keep the behavior deterministic.
       if (file.includes('blurry') || file.includes('bad_lighting')) {

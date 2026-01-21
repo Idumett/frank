@@ -6,6 +6,7 @@ import { ensureTtsCacheDir, readCachedTts, ttsCacheKey, writeCachedTts } from '.
 
 const tts = new GoogleTtsProvider();
 
+//TODO: Can we set the accent we want?
 export async function ttsRoutes(app: FastifyInstance) {
   ensureTtsCacheDir();
 

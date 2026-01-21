@@ -3,6 +3,7 @@
  * - Hard cap length
  * Maybe remove this?????
  */
+//TODO: enforceShortReply; dont we already do this in the llm, why cut it short further with basic code?
 export function enforceShortReply(
   text: string,
   opts?: { maxSentences?: number; maxChars?: number },

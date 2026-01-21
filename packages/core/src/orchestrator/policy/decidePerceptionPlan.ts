@@ -57,7 +57,7 @@ function includesAny(s: string, terms: string[]) {
   return terms.some((t) => s.includes(t));
 }
 
-//not sure this would work, because sometimes we ask what something is expecting it to be read and not just labeled. So how do we differentiate?
+//TODO: PerceptionPlan; not sure it would work, because sometimes we ask what something is expecting it to be read and not just labeled. So how do we differentiate?
 export function decidePerceptionPlan(args: {
   intent: 'read_text' | 'describe_scene' | 'remember_this' | 'recall' | 'help';
   utterance?: string;

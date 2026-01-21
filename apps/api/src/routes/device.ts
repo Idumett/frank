@@ -1,22 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import multipart from '@fastify/multipart';
 import { z } from 'zod';
-import { MemoryItem, UserRequestSchema } from '@frank/contracts';
-import { makeFrank } from '../coreWiring.js';
+import { UserRequestSchema } from '@frank/contracts';
 import { GoogleTtsProvider } from '@frank/providers';
-import { SqliteMemoryStore } from '../db/sqliteMemoryStore.js';
+import { FrankOrchestrator } from '@frank/core';
 
-const sqlite = new SqliteMemoryStore();
-const memoryStore = {
-  add: async (item: MemoryItem) => sqlite.add(item),
-  search: async (query: string, limit: number) => sqlite.search(query, { limit }),
-  recent: (limit: number) => sqlite.recent(limit),
-  delete: (ids: string[]) => sqlite.delete(ids),
-};
-const frank = makeFrank(memoryStore);
 const tts = new GoogleTtsProvider();
 
-export async function deviceRoutes(app: FastifyInstance) {
+export async function deviceRoutes(app: FastifyInstance, frank: FrankOrchestrator) {
   await app.register(multipart, {
     limits: {
       fileSize: 8 * 1024 * 1024, // 8MB per frame

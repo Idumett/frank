@@ -17,6 +17,7 @@ import { deviceRoutes } from './routes/device.js';
 import { checkCooldown } from './rateLimit.js';
 import sharp from 'sharp';
 import { deviceStreamRoutes } from './routes/deviceStream.js';
+//TODO: Cleanup code and depencies, make them look good
 
 migrate();
 const sqlite = new SqliteMemoryStore();
@@ -170,8 +171,8 @@ app.get('/v1/memory/recent', async (req) => {
 await sttRoutes(app);
 await ttsRoutes(app);
 
-await deviceRoutes(app);
-await deviceStreamRoutes(app);
+await deviceRoutes(app, frank);
+await deviceStreamRoutes(app, frank);
 
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '0.0.0.0';
