@@ -21,42 +21,47 @@ export class FrankOrchestrator {
    * The brain:
    * UserRequest + image -> AssistantReply
    */
-  async handleUserRequest(request: UserRequest, imageBytes: Buffer): Promise<AssistantReply> {
+  async handleUserRequest(request: UserRequest, imageBytes?: Buffer): Promise<AssistantReply> {
     const now = new Date().toISOString();
 
     //TODO: Is there a safe fallback if budget is exceeded?
     const budget = new CallBudget({ maxVisionCalls: 2, maxLlmCalls: 1 });
 
     // 1) Quality gating (cheap)
-    const quality = await this.deps.quality.assess(imageBytes);
+    let ocrRes;
+    let labelsRes;
+    let quality;
+    if (imageBytes) {
+      quality = await this.deps.quality.assess(imageBytes);
 
-    // 2) Vision calls (parallel) - count calls before spending
-    const plan = decidePerceptionPlan({ intent: request.intent, utterance: request.utterance });
-    const callArgs = { trace: request.trace, imageBytes, capturedAt: now };
-    const wantsRead = (request.utterance ?? '').toLowerCase().includes('read');
-    const minOcrChars = 3;
-    const runOcr = async () => {
-      budget.useVisionCall();
-      return this.deps.vision.analyzeOCR(callArgs);
-    };
-    const runLabels = async () => {
-      budget.useVisionCall();
-      return this.deps.vision.analyzeLabels(callArgs);
-    };
-    //..............................................................................
-    // Primary pass (only what plan requested)
-    let ocrRes = plan.doOcr ? await runOcr() : null;
-    let labelsRes = plan.doLabels ? await runLabels() : null;
-    // Fallbacks (at most one extra call each, only when useful)
-    const ocrText = ocrRes?.ocr?.fullText?.trim() ?? '';
-    const hasOcrText = ocrText.length >= minOcrChars;
-    // If we didn't run OCR but user clearly asked to read, try OCR once.
-    if (!ocrRes && wantsRead) {
-      ocrRes = await runOcr();
-    }
-    // If we ran OCR-only but it found no text, rescue with labels once.
-    if (plan.doOcr && !plan.doLabels && !hasOcrText && !labelsRes) {
-      labelsRes = await runLabels();
+      // 2) Vision calls (parallel) - count calls before spending
+      const plan = decidePerceptionPlan({ intent: request.intent, utterance: request.utterance });
+      const callArgs = { trace: request.trace, imageBytes, capturedAt: now };
+      const wantsRead = (request.utterance ?? '').toLowerCase().includes('read');
+      const minOcrChars = 3;
+      const runOcr = async () => {
+        budget.useVisionCall();
+        return this.deps.vision.analyzeOCR(callArgs);
+      };
+      const runLabels = async () => {
+        budget.useVisionCall();
+        return this.deps.vision.analyzeLabels(callArgs);
+      };
+      //..............................................................................
+      // Primary pass (only what plan requested)
+      ocrRes = plan.doOcr ? await runOcr() : null;
+      labelsRes = plan.doLabels ? await runLabels() : null;
+      // Fallbacks (at most one extra call each, only when useful)
+      const ocrText = ocrRes?.ocr?.fullText?.trim() ?? '';
+      const hasOcrText = ocrText.length >= minOcrChars;
+      // If we didn't run OCR but user clearly asked to read, try OCR once.
+      if (!ocrRes && wantsRead) {
+        ocrRes = await runOcr();
+      }
+      // If we ran OCR-only but it found no text, rescue with labels once.
+      if (plan.doOcr && !plan.doLabels && !hasOcrText && !labelsRes) {
+        labelsRes = await runLabels();
+      }
     }
 
     // 3) Merge into one PerceptionResult (contract)
@@ -64,8 +69,8 @@ export class FrankOrchestrator {
       trace: request.trace,
       provider: 'gcv',
       capturedAt: now,
-      imageQuality: quality.imageQuality,
-      imageQualityNotes: quality.notes,
+      imageQuality: quality?.imageQuality,
+      imageQualityNotes: quality?.notes,
       ocr: ocrRes?.ocr,
       labels: labelsRes?.labels ?? [],
     });
@@ -86,7 +91,10 @@ export class FrankOrchestrator {
     const policy = this.deps.policy.decide({
       request,
       perception,
-      quality,
+      quality: quality ?? {
+        imageQuality: 'good',
+        notes: [],
+      },
       memoryHits,
     });
 

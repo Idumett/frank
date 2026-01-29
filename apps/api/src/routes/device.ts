@@ -16,7 +16,7 @@ export async function deviceRoutes(app: FastifyInstance, frank: FrankOrchestrato
   });
 
   app.post('/v1/device/frame', async (req, reply) => {
-    // Parse multipart parts
+    // Parse multipart parts {{type: file, fieldname: frame}, {type: field, fieldname: payload}}
     const parts = req.parts();
 
     let imageBytes: Buffer | null = null;
@@ -34,7 +34,7 @@ export async function deviceRoutes(app: FastifyInstance, frank: FrankOrchestrato
       return reply.code(400).send({ error: 'Missing frame file field' });
     }
     if (!payloadRaw) {
-      return reply.code(400).send({ error: 'Missing payload field' });
+      return reply.code(400).send({ error: 'Missing payload field field' });
     }
 
     const PayloadSchema = UserRequestSchema.extend({
@@ -81,7 +81,6 @@ export async function deviceRoutes(app: FastifyInstance, frank: FrankOrchestrato
       `--${boundary}\r\n` +
       `Content-Type: application/json\r\n\r\n` +
       `${JSON.stringify(meta)}\r\n`;
-
     const audioPartHeader = audioBytes
       ? `--${boundary}\r\nContent-Type: audio/mpeg\r\nContent-Disposition: attachment; filename="reply.mp3"\r\n\r\n`
       : '';

@@ -47,7 +47,7 @@ function safeSend(conn: any, msg: unknown) {
   }
 }
 
-//TODO: Confirm this and every other new code all points to the same root definitions and doesnt go rogue
+// Device stream doesnt process until a frame is sent, if we want just voice, call maybeProcess from the if(utterance)
 export async function deviceStreamRoutes(app: FastifyInstance, frank: FrankOrchestrator) {
   await app.register(websocket);
 
