@@ -8,7 +8,7 @@ export interface SttProvider {
   transcribe(args: {
     trace: Trace;
     audioBytes: Buffer;
-    mimeType: string; // e.g. "audio/wav"
+    mimeType?: string; // e.g. "audio/wav"
     languageCode?: string; // e.g. "en-GB"
     sampleRateHertz?: number;
   }): Promise<{ transcript: string; confidence?: number }>;
