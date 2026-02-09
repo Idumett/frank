@@ -35,6 +35,15 @@ export function migrate() {
 
     CREATE INDEX IF NOT EXISTS idx_memory_items_content
       ON memory_items(content);
+
+    CREATE TABLE IF NOT EXISTS user_prefs (
+      session_id TEXT PRIMARY KEY,
+      tts_language_code TEXT,
+      tts_voice_name TEXT,
+      tts_speaking_rate REAL,
+      tts_pitch REAL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   // embeddings: optional (for later semantic search)

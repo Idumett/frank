@@ -3,11 +3,17 @@ import multipart from '@fastify/multipart';
 import { z } from 'zod';
 import { UserRequestSchema } from '@frank/contracts';
 import { GoogleTtsProvider } from '@frank/providers';
-import { FrankOrchestrator } from '@frank/core';
+import { FrankOrchestrator, resolveTtsPrefs } from '@frank/core';
+import { UserPrefsStoreAdapter } from '../prefs/UserPrefsStoreAdapter.js';
+import { UserPrefsStore } from '../prefs/UserPrefsStore.js';
 
 const tts = new GoogleTtsProvider();
 
-export async function deviceRoutes(app: FastifyInstance, frank: FrankOrchestrator) {
+export async function deviceRoutes(
+  app: FastifyInstance,
+  frank: FrankOrchestrator,
+  deps: { prefs: UserPrefsStore },
+) {
   await app.register(multipart, {
     limits: {
       fileSize: 8 * 1024 * 1024, // 8MB per frame
@@ -48,16 +54,28 @@ export async function deviceRoutes(app: FastifyInstance, frank: FrankOrchestrato
 
     // Run Frank core
     const assistantReply = await frank.handleUserRequest(payload, imageBytes);
-
     const nowIso = new Date().toISOString();
 
     // Generate audio (optional)
     let audioBytes: Buffer | null = null;
     if (payload.wantAudio) {
+      // Get TTS info
+      const prefsAdapter = new UserPrefsStoreAdapter(deps.prefs);
+      const DEFAULT_LANG = process.env.DEFAULT_TTS_LANGUAGE_CODE ?? 'en-GB';
+      const DEFAULT_VOICE = process.env.DEFAULT_TTS_VOICE_NAME; // optional
+      const resolved = await resolveTtsPrefs({
+        trace: payload.trace,
+        prefs: prefsAdapter,
+        defaults: { languageCode: DEFAULT_LANG, voiceName: DEFAULT_VOICE },
+      });
+
       const audio = await tts.speak({
         trace: payload.trace,
         text: assistantReply.speak,
-        languageCode: 'en-GB',
+        languageCode: resolved.languageCode,
+        voiceName: resolved.voiceName,
+        speakingRate: resolved.speakingRate,
+        pitch: resolved.pitch,
       });
       audioBytes = audio.audioBytes;
     }

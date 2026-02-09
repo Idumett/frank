@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import sensible from '@fastify/sensible';
 import crypto from 'node:crypto';
+import sharp from 'sharp';
 
 import {
   AssistantReplySchema,
@@ -11,13 +12,15 @@ import {
 import { makeFrank } from './coreWiring.js';
 import { migrate } from './db/migrate.js';
 import { SqliteMemoryStore } from './db/sqliteMemoryStore.js';
+import { UserPrefsStore } from './prefs/UserPrefsStore.js';
+import { checkCooldown } from './rateLimit.js';
+
 import { sttRoutes } from './routes/stt.js';
 import { ttsRoutes } from './routes/tts.js';
 import { deviceRoutes } from './routes/device.js';
-import { checkCooldown } from './rateLimit.js';
-import sharp from 'sharp';
 import { deviceStreamRoutes } from './routes/deviceStream.js';
-//TODO: Cleanup code and depencies, make them look good
+import { prefsTtsRoutes } from './routes/prefs.js';
+import { ttsVoicesRoutes } from './routes/ttsVoices.js';
 
 migrate();
 const sqlite = new SqliteMemoryStore();
@@ -27,6 +30,7 @@ const memoryStore = {
   recent: (limit: number) => sqlite.recent(limit),
   delete: (ids: string[]) => sqlite.delete(ids),
 };
+const prefs = new UserPrefsStore(sqlite.rawDb);
 const frank = makeFrank(memoryStore);
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL ?? 'info' },
@@ -171,7 +175,10 @@ app.get('/v1/memory/recent', async (req) => {
 await sttRoutes(app);
 await ttsRoutes(app);
 
-await deviceRoutes(app, frank);
+await ttsVoicesRoutes(app);
+await prefsTtsRoutes(app, { prefs });
+
+await deviceRoutes(app, frank, { prefs });
 await deviceStreamRoutes(app, frank);
 
 const port = Number(process.env.PORT ?? 3000);

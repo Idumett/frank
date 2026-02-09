@@ -3,6 +3,7 @@ export * from './vision/gcvVisionProvider.js';
 
 export * from './tts/TtsProvider.js';
 export * from './tts/googleTtsProvider.js';
+export * from './tts/listVoicesGoogleTts.js';
 
 export * from './stt/SttProvider.js';
 export * from './stt/googleSttProvider.js';

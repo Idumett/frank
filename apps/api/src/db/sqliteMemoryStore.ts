@@ -26,6 +26,11 @@ export class SqliteMemoryStore {
     this.db.close();
   }
 
+  //the any isnt recommended.
+  get rawDb(): any {
+    return this.db;
+  }
+
   add(item: MemoryItem) {
     const validated = MemoryItemSchema.parse(item);
 

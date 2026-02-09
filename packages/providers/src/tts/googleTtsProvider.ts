@@ -14,17 +14,21 @@ export class GoogleTtsProvider implements TtsProvider {
     text: string;
     languageCode?: string;
     voiceName?: string;
+    speakingRate?: number;
+    pitch?: number;
   }): Promise<{ audioBytes: Buffer; mimeType: string }> {
-    const languageCode = args.languageCode ?? 'en-GB';
+    const voice =
+      args.voiceName && args.voiceName.trim().length > 0
+        ? { languageCode: args.languageCode, name: args.voiceName }
+        : { languageCode: args.languageCode };
 
     const [response] = await this.client.synthesizeSpeech({
       input: { text: args.text },
-      voice: {
-        languageCode,
-        name: args.voiceName,
-      },
+      voice,
       audioConfig: {
         audioEncoding: 'MP3',
+        speakingRate: args.speakingRate,
+        pitch: args.pitch,
       },
     });
 
