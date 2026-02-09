@@ -1,13 +1,6 @@
 import crypto from 'node:crypto';
 import type { MemoryItem, UserRequest } from '@frank/contracts';
-import { FrankOrchestrator } from '@frank/core';
-
-// Adjust these imports to match our actual exports.
-// If our BasicPolicyEngine/BasicQualityGater are not exported cleanly yet,
-// either export them from @frank/core, or temporarily import from their paths.
-import { BasicPolicyEngine } from '@frank/core/dist/orchestrator/policy/basicPolicyEngine.js';
-import { BasicQualityGater } from '@frank/core/dist/orchestrator/quality/basicQualityGater.js';
-
+import { FrankOrchestrator, BasicPolicyEngine, BasicQualityGater } from '@frank/core';
 import { GcvVisionProvider, GeminiLlmProvider } from '@frank/providers';
 
 export function makeFrankForTests() {

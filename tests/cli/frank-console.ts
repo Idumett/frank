@@ -5,17 +5,17 @@ import { performance } from 'node:perf_hooks';
 import inquirer from 'inquirer';
 import sharp from 'sharp';
 
-import type { UserRequest, PerceptionResult, AssistantReply, MemoryItem } from '@frank/contracts';
-import { PerceptionResultSchema } from '@frank/contracts';
-
-import { FrankOrchestrator } from '@frank/core';
-import { makeMemoryApiStore } from './memoryApiStore.js';
+import {
+  UserRequest,
+  PerceptionResult,
+  AssistantReply,
+  MemoryItem,
+  PerceptionResultSchema,
+} from '@frank/contracts';
+import { FrankOrchestrator, BasicPolicyEngine, BasicQualityGater } from '@frank/core';
 import { GcvVisionProvider, GeminiLlmProvider } from '@frank/providers';
 
-// If these aren’t exported nicely yet, adjust import paths.
-// Recommended: export these from @frank/core instead of dist paths.
-import { BasicPolicyEngine } from '@frank/core/dist/orchestrator/policy/basicPolicyEngine.js';
-import { BasicQualityGater } from '@frank/core/dist/orchestrator/quality/basicQualityGater.js';
+import { makeMemoryApiStore } from './memoryApiStore.js';
 
 const FIXTURES_DIR = path.resolve('tests/fixtures/images');
 
