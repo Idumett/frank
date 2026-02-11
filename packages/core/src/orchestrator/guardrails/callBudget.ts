@@ -1,24 +1,32 @@
+type BudgetLimits = { maxVisionCalls: number; maxLlmCalls: number };
+
 export class CallBudget {
   private visionCalls = 0;
   private llmCalls = 0;
 
-  constructor(private limits: { maxVisionCalls: number; maxLlmCalls: number }) {}
+  constructor(private limits: BudgetLimits) {}
 
-  useVisionCall() {
-    this.visionCalls += 1;
-    if (this.visionCalls > this.limits.maxVisionCalls) {
-      throw new Error('Call budget exceeded: vision');
-    }
+  canCallVision() {
+    return this.visionCalls < this.limits.maxVisionCalls;
   }
 
-  useLlmCall() {
-    this.llmCalls += 1;
-    if (this.llmCalls > this.limits.maxLlmCalls) {
-      throw new Error('Call budget exceeded: llm');
-    }
+  canCallLlm() {
+    return this.llmCalls < this.limits.maxLlmCalls;
+  }
+
+  recordVisionCall() {
+    this.visionCalls++;
+  }
+
+  recordLlmCall() {
+    this.llmCalls++;
   }
 
   snapshot() {
-    return { visionCalls: this.visionCalls, llmCalls: this.llmCalls };
+    return {
+      visionCalls: this.visionCalls,
+      llmCalls: this.llmCalls,
+      limits: this.limits,
+    };
   }
 }

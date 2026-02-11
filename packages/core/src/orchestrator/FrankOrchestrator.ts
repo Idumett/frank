@@ -24,8 +24,12 @@ export class FrankOrchestrator {
   async handleUserRequest(request: UserRequest, imageBytes?: Buffer): Promise<AssistantReply> {
     const now = new Date().toISOString();
 
-    //TODO: Is there a safe fallback if budget is exceeded?
     const budget = new CallBudget({ maxVisionCalls: 2, maxLlmCalls: 1 });
+    const spendVision = () => {
+      if (!budget.canCallVision()) return false;
+      budget.recordVisionCall();
+      return true;
+    };
 
     // 1) Quality gating (cheap)
     let ocrRes;
@@ -40,11 +44,11 @@ export class FrankOrchestrator {
       const wantsRead = (request.utterance ?? '').toLowerCase().includes('read');
       const minOcrChars = 3;
       const runOcr = async () => {
-        budget.useVisionCall();
+        if (!spendVision()) return null;
         return this.deps.vision.analyzeOCR(callArgs);
       };
       const runLabels = async () => {
-        budget.useVisionCall();
+        if (!spendVision()) return null;
         return this.deps.vision.analyzeLabels(callArgs);
       };
       //..............................................................................
@@ -132,7 +136,12 @@ export class FrankOrchestrator {
       return AssistantReplySchema.parse(reply);
     }
 
-    budget.useLlmCall();
+    if (!budget.canCallLlm())
+      return AssistantReplySchema.parse({
+        trace: request.trace,
+        speak: 'Too many tries. Please try again in a moment.',
+      });
+    budget.recordLlmCall();
 
     const compactMemoryHits = memoryHits.map((m) => `${m.title}: ${m.content}`).slice(0, 5);
 

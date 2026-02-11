@@ -20,7 +20,6 @@ export class BasicPolicyEngine implements PolicyEngine {
      * Even if image quality is poor, proceed with LLM if the user asked something specific.
      * But remain honest: low confidence + include a recapture prompt (for follow-up).
      */
-    //TODO: look through this one more time and make sure it's useful
     if (isPoor) {
       reasons.push(...args.quality.notes);
 
