@@ -140,6 +140,7 @@ export class FrankOrchestrator {
       return AssistantReplySchema.parse({
         trace: request.trace,
         speak: 'Too many tries. Please try again in a moment.',
+        suggestedAction: 'recapture',
       });
     budget.recordLlmCall();
 
@@ -155,6 +156,7 @@ export class FrankOrchestrator {
 
     // confidence language + hard shorten
     //TODO: Not just policy.confidence, but reasons,suggestedactions, shouldstore, recaptureprompt and ocrconfidence, are they actually used?(policyDecision)
+    //They are used in the core, the suggested actions are sent back to the caller to decide what to do, in the analyze route this is handled right, but the devices routes dont use them.
     const toned = applyConfidenceTone({
       text: llmReply.speak,
       confidence: policy.confidence ?? 'medium',
