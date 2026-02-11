@@ -12,7 +12,6 @@ import {
 import type { FrankDeps } from './types.js';
 import { CallBudget } from './guardrails/callBudget.js';
 import { applyConfidenceTone, enforceShortReply } from './guardrails/shortReply.js';
-import { decidePerceptionPlan } from './policy/decidePerceptionPlan.js';
 
 export class FrankOrchestrator {
   constructor(private deps: FrankDeps) {}
@@ -31,44 +30,22 @@ export class FrankOrchestrator {
       return true;
     };
 
-    // 1) Quality gating (cheap)
     let ocrRes;
     let labelsRes;
     let quality;
     if (imageBytes) {
       quality = await this.deps.quality.assess(imageBytes);
 
-      // 2) Vision calls (parallel) - count calls before spending
-      const plan = decidePerceptionPlan({ intent: request.intent, utterance: request.utterance });
+      // 1) Vision calls (parallel) - count calls before spending
       const callArgs = { trace: request.trace, imageBytes, capturedAt: now };
-      const wantsRead = (request.utterance ?? '').toLowerCase().includes('read');
-      const minOcrChars = 3;
-      const runOcr = async () => {
-        if (!spendVision()) return null;
-        return this.deps.vision.analyzeOCR(callArgs);
-      };
-      const runLabels = async () => {
-        if (!spendVision()) return null;
-        return this.deps.vision.analyzeLabels(callArgs);
-      };
-      //..............................................................................
-      // Primary pass (only what plan requested)
-      ocrRes = plan.doOcr ? await runOcr() : null;
-      labelsRes = plan.doLabels ? await runLabels() : null;
-      // Fallbacks (at most one extra call each, only when useful)
-      const ocrText = ocrRes?.ocr?.fullText?.trim() ?? '';
-      const hasOcrText = ocrText.length >= minOcrChars;
-      // If we didn't run OCR but user clearly asked to read, try OCR once.
-      if (!ocrRes && wantsRead) {
-        ocrRes = await runOcr();
-      }
-      // If we ran OCR-only but it found no text, rescue with labels once.
-      if (plan.doOcr && !plan.doLabels && !hasOcrText && !labelsRes) {
-        labelsRes = await runLabels();
-      }
+      const run = (fn: any) => (spendVision() ? fn(callArgs) : Promise.resolve(null));
+      [ocrRes, labelsRes] = await Promise.all([
+        run(this.deps.vision.analyzeOCR),
+        run(this.deps.vision.analyzeLabels),
+      ]);
     }
 
-    // 3) Merge into one PerceptionResult (contract)
+    // 2) Merge into one PerceptionResult (contract)
     const perception: PerceptionResult = PerceptionResultSchema.parse({
       trace: request.trace,
       provider: 'gcv',
@@ -79,7 +56,7 @@ export class FrankOrchestrator {
       labels: labelsRes?.labels ?? [],
     });
 
-    // 4) Memory hits (Jarvis mode: use memory for ANY meaningful utterance)
+    // 3) Memory hits (Jarvis mode: use memory for ANY meaningful utterance)
     const userText = request.query?.trim() || request.utterance?.trim() || '';
     let memoryHits = [] as any[];
 
@@ -91,7 +68,7 @@ export class FrankOrchestrator {
       memoryHits = await this.deps.memory.search('', 0); // or implement recent() and use that
     }
 
-    // 5) Policy decision
+    // 4) Policy decision
     const policy = this.deps.policy.decide({
       request,
       perception,
@@ -118,7 +95,7 @@ export class FrankOrchestrator {
       return AssistantReplySchema.parse(reply);
     }
 
-    // 6) Generate spoken reply (LLM; grounded)
+    // 5) Generate spoken reply (LLM; grounded)
     if (!policy.allowLlmCall) {
       // Deterministic fallback if LLM disabled by policy
       const fallback = 'Not sure. Try moving closer.';
@@ -176,7 +153,7 @@ export class FrankOrchestrator {
         policy.confidence === 'low' ? 'recapture' : (llmReply.suggestedAction ?? 'none'),
     });
 
-    // 7) Store memory (guardrail: DO NOT store when confidence is low)
+    // 6) Store memory (guardrail: DO NOT store when confidence is low)
     // Jarvis mode helps even if unclear, but we avoid dirty memory.
     const canStore = policy.shouldStore && policy.confidence !== 'low';
 
