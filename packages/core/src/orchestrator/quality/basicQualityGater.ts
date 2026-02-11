@@ -9,7 +9,7 @@ function clamp(n: number, min: number, max: number) {
  * - checks size
  * - checks "entropy-ish" (roughly: is the image all one color?) using byte variance
  *
- * This isn't blur detection; it’s a cheap placeholder until we add OpenCV later.
+ * TODO later: This isn't blur detection; it’s a cheap placeholder until we add OpenCV later.
  */
 export class BasicQualityGater implements QualityGater {
   async assess(imageBytes: Buffer): Promise<QualityReport> {
