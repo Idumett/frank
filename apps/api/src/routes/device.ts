@@ -3,7 +3,7 @@ import multipart from '@fastify/multipart';
 import { z } from 'zod';
 import { UserRequestSchema } from '@frank/contracts';
 import { GoogleTtsProvider } from '@frank/providers';
-import { FrankOrchestrator, resolveTtsPrefs } from '@frank/core';
+import { FrankOrchestrator, pickDeviceSpeak, resolveTtsPrefs } from '@frank/core';
 import { UserPrefsStoreAdapter } from '../prefs/UserPrefsStoreAdapter.js';
 import { UserPrefsStore } from '../prefs/UserPrefsStore.js';
 
@@ -68,10 +68,11 @@ export async function deviceRoutes(
         prefs: prefsAdapter,
         defaults: { languageCode: DEFAULT_LANG, voiceName: DEFAULT_VOICE },
       });
+      const speakText = pickDeviceSpeak(assistantReply);
 
       const audio = await tts.speak({
         trace: payload.trace,
-        text: assistantReply.speak,
+        text: speakText,
         languageCode: resolved.languageCode,
         voiceName: resolved.voiceName,
         speakingRate: resolved.speakingRate,

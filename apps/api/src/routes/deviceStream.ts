@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 import { GoogleTtsProvider } from '@frank/providers';
 import { UserRequestSchema } from '@frank/contracts';
-import { FrankOrchestrator } from '@frank/core';
+import { FrankOrchestrator, pickDeviceSpeak } from '@frank/core';
 
 const tts = new GoogleTtsProvider();
 
@@ -47,7 +47,7 @@ function safeSend(conn: any, msg: unknown) {
   }
 }
 
-// Device stream doesnt process until a frame is sent, if we want just voice, call maybeProcess from the if(utterance)
+// Device stream doesnt process until a frame is sent, if we want just voice, call maybeProcess from the if(utterance) and remove 158
 export async function deviceStreamRoutes(app: FastifyInstance, frank: FrankOrchestrator) {
   await app.register(websocket);
 
@@ -177,27 +177,28 @@ export async function deviceStreamRoutes(app: FastifyInstance, frank: FrankOrche
         });
 
         // Run Frank core
-        const reply = await frank.handleUserRequest(request, lastFrameBytes);
+        const assistantReply = await frank.handleUserRequest(request, lastFrameBytes);
 
         // If stop was requested mid-flight, do not send results
         if (localAbort.signal.aborted) return;
 
         const totalMs = Date.now() - startedAt;
 
-        lastReplyText = reply.speak;
+        lastReplyText = assistantReply.speak;
 
         safeSend(conn, {
           type: 'meta',
           trace,
-          reply,
+          reply: assistantReply,
           timings: { totalMs, frameSeq: lastFrameSeq },
           costUnits: 3,
         });
 
         // TTS (optional: only if device wants audio; v1 always sends)
+        const speakText = pickDeviceSpeak(assistantReply);
         const audio = await tts.speak({
           trace,
-          text: reply.speak,
+          text: speakText,
           languageCode: 'en-GB',
         });
 

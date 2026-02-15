@@ -6,3 +6,4 @@ export * from './orchestrator/guardrails/shortReply.js';
 export * from './orchestrator/guardrails/callBudget.js';
 export * from './prefs/types.js';
 export * from './prefs/resolveTtsPrefs.js';
+export * from './ux/deviceReply.js';
