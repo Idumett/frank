@@ -45,11 +45,16 @@ export class GeminiLlmProvider implements LlmProvider {
       `2. Current image evidence — OCR text or labels from the current request.`,
       `3. Memory hits — relevant past knowledge Frank stored earlier.`,
 
-      `Priority order:`,
+      `Typical priority order:`,
       `Conversation context → Image evidence → Memory hits.`,
 
-      `Conversation context helps resolve follow-ups like "that", "it", "more on that".`,
-      `Use it whenever possible to continue the discussion naturally.`,
+      `Conversation context helps resolve follow-ups like "that", "it", or "more on that".`,
+      `However, users may change topics at any time.`,
+
+      `If the user's question clearly starts a new topic,`,
+      `ignore the previous conversation context and answer the new topic normally.`,
+
+      `Do not force old conversation topics if they are unrelated.`,
 
       `Only treat an image as current if CURRENT_IMAGE is PRESENT.`,
       `Do not pretend an image exists when CURRENT_IMAGE is NONE.`,

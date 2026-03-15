@@ -25,17 +25,20 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   async getRecent(sessionId: string, limit: number): Promise<ConversationTurn[]> {
+    const cutoff = new Date(Date.now() - 9 * 60 * 1000).toISOString();
+
     const rows = this.db
       .prepare(
         `
-        SELECT session_id, role, text, created_at
-        FROM conversation_turns
-        WHERE session_id = ?
-        ORDER BY created_at DESC
-        LIMIT ?
-        `,
+          SELECT session_id, role, text, created_at
+          FROM conversation_turns
+          WHERE session_id = ?
+            AND created_at >= ?
+          ORDER BY created_at DESC
+          LIMIT ?
+    `,
       )
-      .all(sessionId, limit);
+      .all(sessionId, cutoff, limit);
 
     // DB returns newest first; reverse so prompt reads oldest -> newest
     const turns: ConversationTurn[] = rows
