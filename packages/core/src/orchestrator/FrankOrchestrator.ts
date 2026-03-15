@@ -21,6 +21,7 @@ export class FrankOrchestrator {
    * UserRequest + image -> AssistantReply
    */
   async handleUserRequest(request: UserRequest, imageBytes?: Buffer): Promise<AssistantReply> {
+    // console.log('we get to 1');
     const now = new Date().toISOString();
 
     const budget = new CallBudget({ maxVisionCalls: 2, maxLlmCalls: 1 });
@@ -38,7 +39,8 @@ export class FrankOrchestrator {
 
       // 1) Vision calls (parallel) - count calls before spending
       const callArgs = { trace: request.trace, imageBytes, capturedAt: now };
-      const run = (fn: any) => (spendVision() ? fn(callArgs) : Promise.resolve(null));
+      const run = (fn: (args: any) => Promise<any>) =>
+        spendVision() ? fn.call(this.deps.vision, callArgs) : Promise.resolve(null);
       [ocrRes, labelsRes] = await Promise.all([
         run(this.deps.vision.analyzeOCR),
         run(this.deps.vision.analyzeLabels),
@@ -122,14 +124,38 @@ export class FrankOrchestrator {
     budget.recordLlmCall();
 
     const compactMemoryHits = memoryHits.map((m) => `${m.title}: ${m.content}`).slice(0, 5);
+    const conversationTurns = request.trace.sessionId
+      ? await this.deps.conversation.getRecent(request.trace.sessionId, 6)
+      : [];
+    const conversationContext = conversationTurns.map((t) => `${t.role}: ${t.text}`).join(' | ');
 
     const llmReply = await this.deps.llm.generateReply({
       trace: request.trace,
       userUtterance: request.utterance,
       perception,
       memoryHits: compactMemoryHits,
+      conversationContext,
       now,
     });
+
+    //Save conversation context
+    if (request.trace.sessionId) {
+      if (request.utterance?.trim()) {
+        await this.deps.conversation.addTurn({
+          sessionId: request.trace.sessionId,
+          role: 'user',
+          text: request.utterance.trim(),
+          createdAt: now,
+        });
+      }
+
+      await this.deps.conversation.addTurn({
+        sessionId: request.trace.sessionId,
+        role: 'assistant',
+        text: llmReply.speak,
+        createdAt: now,
+      });
+    }
 
     // confidence language + hard shorten
     const toned = applyConfidenceTone({

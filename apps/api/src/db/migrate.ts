@@ -44,6 +44,17 @@ export function migrate() {
       tts_pitch REAL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS conversation_turns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      text TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_conversation_turns_session_created
+    ON conversation_turns(session_id, created_at DESC);
   `);
 
   // embeddings: optional (for later semantic search)

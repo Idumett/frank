@@ -5,6 +5,8 @@ export interface TtsProvider {
     trace: Trace;
     text: string;
     languageCode?: string; // e.g. "en-GB"
+    speakingRate?: number;
+    pitch?: number;
     voiceName?: string; // optional specific voice
   }): Promise<{ audioBytes: Buffer; mimeType: string }>;
 }

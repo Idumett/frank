@@ -1,4 +1,10 @@
-import { BasicPolicyEngine, BasicQualityGater, FrankOrchestrator, MemoryStore } from '@frank/core';
+import {
+  BasicPolicyEngine,
+  BasicQualityGater,
+  ConversationStore,
+  FrankOrchestrator,
+  MemoryStore,
+} from '@frank/core';
 import { GcvVisionProvider, GeminiLlmProvider } from '@frank/providers';
 import { MemoryItem } from '@frank/contracts';
 import { SqliteMemoryStore } from './db/sqliteMemoryStore.js';
@@ -11,12 +17,16 @@ const defaultMemoryStore = {
   delete: (ids: string[]) => sqlite.delete(ids),
 };
 
-export function makeFrank(memoryStore: MemoryStore = defaultMemoryStore) {
+export function makeFrank(
+  memoryStore: MemoryStore = defaultMemoryStore,
+  conversationStore: ConversationStore,
+) {
   return new FrankOrchestrator({
     vision: new GcvVisionProvider(),
     llm: new GeminiLlmProvider({ model: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash' }),
     memory: memoryStore,
     quality: new BasicQualityGater(),
     policy: new BasicPolicyEngine(),
+    conversation: conversationStore,
   });
 }

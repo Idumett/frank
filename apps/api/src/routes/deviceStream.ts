@@ -2,13 +2,10 @@ import type { FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
 import { z } from 'zod';
 
-import { GoogleTtsProvider } from '@frank/providers';
+import { TtsProvider, SttProvider } from '@frank/providers';
 import { UserRequestSchema } from '@frank/contracts';
 import { FrankOrchestrator, pickDeviceSpeak } from '@frank/core';
 
-const tts = new GoogleTtsProvider();
-
-// ---- Zod schemas for messages (keeps it safe) ----
 const TraceSchema = UserRequestSchema.shape.trace;
 
 const ClientMsgSchema = z.discriminatedUnion('type', [
@@ -22,7 +19,15 @@ const ClientMsgSchema = z.discriminatedUnion('type', [
       })
       .optional(),
   }),
-  z.object({ type: z.literal('utterance'), text: z.string().min(1).max(4000) }),
+  z.object({
+    type: z.literal('utterance'),
+    text: z.string().min(1).max(4000),
+  }),
+  z.object({
+    type: z.literal('audio'),
+    mime: z.enum(['audio/wav', 'audio/webm', 'audio/mpeg']),
+    audioBase64: z.string().min(20),
+  }),
   z.object({
     type: z.literal('intent'),
     intent: z.enum(['read_text', 'describe_scene', 'remember_this', 'recall', 'help']),
@@ -39,61 +44,64 @@ const ClientMsgSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('ping'), t: z.number() }),
 ]);
 
-function safeSend(conn: any, msg: unknown) {
+function safeSend(socket: any, msg: unknown) {
   try {
-    conn.socket.send(JSON.stringify(msg));
+    socket.send(JSON.stringify(msg));
   } catch {
     // ignore
   }
 }
 
-// Device stream doesnt process until a frame is sent, if we want just voice, call maybeProcess from the if(utterance) and remove 158
-export async function deviceStreamRoutes(app: FastifyInstance, frank: FrankOrchestrator) {
+export async function deviceStreamRoutes(
+  app: FastifyInstance,
+  frank: FrankOrchestrator,
+  stt: SttProvider,
+  tts: TtsProvider,
+) {
   await app.register(websocket);
 
-  app.get('/v1/device/stream', { websocket: true }, (conn, req) => {
-    // ---- Session state ----
+  app.get('/v1/device/stream', { websocket: true }, (socket, req) => {
     let trace: { requestId: string; sessionId?: string } | null = null;
     let lastIntent: 'read_text' | 'describe_scene' | 'remember_this' | 'recall' | 'help' =
       'describe_scene';
     let lastQuery: string | undefined;
-    let lastUtterance: string | undefined;
     let lastFrameBytes: Buffer | null = null;
     let lastFrameSeq: number | null = null;
 
-    // For "repeat"
     let lastReplyText: string | null = null;
     let lastAudioBytesBase64: string | null = null;
 
-    // Cancellation (best-effort)
     let inFlight = false;
     let abort = new AbortController();
 
-    safeSend(conn, { type: 'ready', trace: { sessionId: 'unknown', requestId: req.id } });
+    safeSend(socket, { type: 'ready', trace: { sessionId: 'unknown', requestId: req.id } });
 
-    conn.socket.on('message', async (raw: any) => {
-      // Parse JSON messages
+    socket.on('message', async (raw: any) => {
       let parsed: any;
       try {
         parsed = JSON.parse(raw.toString('utf8'));
       } catch {
-        return safeSend(conn, { type: 'error', message: 'Invalid JSON', code: 'BAD_JSON' });
+        return safeSend(socket, { type: 'error', message: 'Invalid JSON', code: 'BAD_JSON' });
       }
 
       const msg = ClientMsgSchema.safeParse(parsed);
       if (!msg.success) {
-        return safeSend(conn, { type: 'error', message: 'Invalid message shape', code: 'BAD_MSG' });
+        return safeSend(socket, {
+          type: 'error',
+          message: 'Invalid message shape',
+          code: 'BAD_MSG',
+        });
       }
 
       const m = msg.data;
 
       if (m.type === 'ping') {
-        return safeSend(conn, { type: 'pong', t: m.t });
+        return safeSend(socket, { type: 'pong', t: m.t });
       }
 
       if (m.type === 'hello') {
         trace = m.trace;
-        safeSend(conn, { type: 'ready', trace });
+        safeSend(socket, { type: 'ready', trace });
         return;
       }
 
@@ -103,61 +111,88 @@ export async function deviceStreamRoutes(app: FastifyInstance, frank: FrankOrche
         return;
       }
 
-      if (m.type === 'utterance') {
-        lastUtterance = m.text;
+      if (m.type === 'frame') {
+        lastFrameBytes = Buffer.from(m.bytesBase64, 'base64');
+        lastFrameSeq = m.seq;
+        safeSend(socket, { type: 'ack', seq: m.seq });
         return;
       }
 
-      if (m.type === 'frame') {
-        // Ack quickly so device knows we got it
-        safeSend(conn, { type: 'ack', seq: m.seq });
+      if (m.type === 'utterance') {
+        await maybeProcess(m.text);
+        return;
+      }
 
-        lastFrameBytes = Buffer.from(m.bytesBase64, 'base64');
-        lastFrameSeq = m.seq;
+      if (m.type === 'audio') {
+        if (!trace) {
+          return safeSend(socket, {
+            type: 'error',
+            message: 'Send hello first',
+            code: 'NO_HELLO',
+          });
+        }
 
-        // Decide whether to process now:
-        // For v1: process whenever a new frame arrives.
-        // We can later require an utterance first.
-        await maybeProcess();
+        try {
+          const audioBytes = Buffer.from(m.audioBase64, 'base64');
+          const sttResult = await stt.transcribe({ trace, audioBytes });
+
+          // safeSend(socket, {
+          //   type: 'transcript',
+          //   trace,
+          //   transcript: sttResult.transcript,
+          //   confidence: sttResult.confidence,
+          // });
+
+          await maybeProcess(sttResult.transcript);
+        } catch (e: any) {
+          safeSend(socket, {
+            type: 'error',
+            message: e?.message ?? 'STT failed',
+            code: 'STT_FAIL',
+          });
+        }
         return;
       }
 
       if (m.type === 'repeat') {
         if (lastReplyText) {
-          safeSend(conn, {
+          safeSend(socket, {
             type: 'meta',
             trace: trace ?? { requestId: req.id, sessionId: 'unknown' },
             reply: { speak: lastReplyText },
           });
         }
         if (lastAudioBytesBase64) {
-          safeSend(conn, { type: 'audio', mime: 'audio/mpeg', bytesBase64: lastAudioBytesBase64 });
+          safeSend(socket, {
+            type: 'audio',
+            mime: 'audio/mpeg',
+            bytesBase64: lastAudioBytesBase64,
+          });
         }
         return;
       }
 
       if (m.type === 'stop') {
-        // Best-effort cancel: prevents sending further results
         abort.abort();
         abort = new AbortController();
         inFlight = false;
-        safeSend(conn, { type: 'stopped' });
-        return;
+        safeSend(socket, { type: 'stopped' });
       }
     });
 
-    conn.socket.on('close', () => {
+    socket.on('close', () => {
       abort.abort();
     });
 
-    async function maybeProcess() {
+    async function maybeProcess(utterance: string) {
       if (!trace) {
-        // Can still run, but better to require hello
-        return safeSend(conn, { type: 'error', message: 'Send hello first', code: 'NO_HELLO' });
+        return safeSend(socket, {
+          type: 'error',
+          message: 'Send hello first',
+          code: 'NO_HELLO',
+        });
       }
-      if (!lastFrameBytes) return;
 
-      // Prevent overlapping work (simple backpressure)
       if (inFlight) return;
 
       inFlight = true;
@@ -165,28 +200,25 @@ export async function deviceStreamRoutes(app: FastifyInstance, frank: FrankOrche
       const localAbort = abort;
 
       try {
-        // Build UserRequest contract
         const request = UserRequestSchema.parse({
           trace,
           intent: lastIntent,
-          modality: 'button', // device
-          utterance: lastUtterance,
-          hasImage: true,
+          modality: 'button',
+          utterance,
+          hasImage: !!lastFrameBytes,
           query: lastIntent === 'recall' ? lastQuery : undefined,
           requestedAt: new Date().toISOString(),
         });
 
-        // Run Frank core
-        const assistantReply = await frank.handleUserRequest(request, lastFrameBytes);
+        const assistantReply = await frank.handleUserRequest(request, lastFrameBytes ?? undefined);
 
-        // If stop was requested mid-flight, do not send results
         if (localAbort.signal.aborted) return;
 
         const totalMs = Date.now() - startedAt;
 
         lastReplyText = assistantReply.speak;
 
-        safeSend(conn, {
+        safeSend(socket, {
           type: 'meta',
           trace,
           reply: assistantReply,
@@ -194,12 +226,14 @@ export async function deviceStreamRoutes(app: FastifyInstance, frank: FrankOrche
           costUnits: 3,
         });
 
-        // TTS (optional: only if device wants audio; v1 always sends)
         const speakText = pickDeviceSpeak(assistantReply);
         const audio = await tts.speak({
           trace,
           text: speakText,
+          voiceName: 'en-GB-Chirp3-HD-Sadachbia',
           languageCode: 'en-GB',
+          speakingRate: 1.0,
+          pitch: 0,
         });
 
         if (localAbort.signal.aborted) return;
@@ -207,10 +241,14 @@ export async function deviceStreamRoutes(app: FastifyInstance, frank: FrankOrche
         const b64 = audio.audioBytes.toString('base64');
         lastAudioBytesBase64 = b64;
 
-        safeSend(conn, { type: 'audio', mime: 'audio/mpeg', bytesBase64: b64 });
+        safeSend(socket, {
+          type: 'audio',
+          mime: 'audio/mpeg',
+          bytesBase64: b64,
+        });
       } catch (e: any) {
         if (!localAbort.signal.aborted) {
-          safeSend(conn, {
+          safeSend(socket, {
             type: 'error',
             message: e?.message ?? 'Unknown error',
             code: 'PROCESS_FAIL',

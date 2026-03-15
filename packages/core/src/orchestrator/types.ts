@@ -6,6 +6,7 @@ import type {
   Trace,
   UserRequest,
 } from '@frank/contracts';
+import { ConversationStore } from '../conversation/types.js';
 
 export interface MemoryStore {
   add(item: MemoryItem): Promise<void>;
@@ -51,10 +52,12 @@ export interface FrankDeps {
       userUtterance?: string;
       perception: PerceptionResult;
       memoryHits: string[];
+      conversationContext: string;
       now: string;
     }): Promise<AssistantReply>;
   };
   memory: MemoryStore;
+  conversation: ConversationStore;
   policy: PolicyEngine;
   quality: QualityGater;
 }

@@ -2,16 +2,16 @@ import type { FastifyInstance } from 'fastify';
 import multipart from '@fastify/multipart';
 import { z } from 'zod';
 import { UserRequestSchema } from '@frank/contracts';
-import { GoogleTtsProvider } from '@frank/providers';
+import { TtsProvider, SttProvider } from '@frank/providers';
 import { FrankOrchestrator, pickDeviceSpeak, resolveTtsPrefs } from '@frank/core';
 import { UserPrefsStoreAdapter } from '../prefs/UserPrefsStoreAdapter.js';
 import { UserPrefsStore } from '../prefs/UserPrefsStore.js';
 
-const tts = new GoogleTtsProvider();
-
 export async function deviceRoutes(
   app: FastifyInstance,
   frank: FrankOrchestrator,
+  stt: SttProvider,
+  tts: TtsProvider,
   deps: { prefs: UserPrefsStore },
 ) {
   await app.register(multipart, {

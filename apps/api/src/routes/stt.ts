@@ -1,11 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { UserRequestSchema } from '@frank/contracts';
-import { GoogleSttProvider } from '@frank/providers';
+import { SttProvider } from '@frank/providers';
 
-const stt = new GoogleSttProvider();
-
-export async function sttRoutes(app: FastifyInstance) {
+export async function sttRoutes(app: FastifyInstance, stt: SttProvider) {
   app.post('/v1/stt', async (req) => {
     const BodySchema = z.object({
       trace: UserRequestSchema.shape.trace,

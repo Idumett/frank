@@ -1,12 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { UserRequestSchema } from '@frank/contracts';
-import { GoogleTtsProvider } from '@frank/providers';
+import { TtsProvider } from '@frank/providers';
 import { ensureTtsCacheDir, readCachedTts, ttsCacheKey, writeCachedTts } from '../ttsCache.js';
 
-const tts = new GoogleTtsProvider();
-
-export async function ttsRoutes(app: FastifyInstance) {
+export async function ttsRoutes(app: FastifyInstance, tts: TtsProvider) {
   ensureTtsCacheDir();
 
   app.post('/v1/tts', async (req, reply) => {

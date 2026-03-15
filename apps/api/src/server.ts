@@ -21,6 +21,8 @@ import { deviceRoutes } from './routes/device.js';
 import { deviceStreamRoutes } from './routes/deviceStream.js';
 import { prefsTtsRoutes } from './routes/prefs.js';
 import { ttsVoicesRoutes } from './routes/ttsVoices.js';
+import { GoogleSttProvider, GoogleTtsProvider } from '@frank/providers';
+import { SqliteConversationStore } from './conversation/SqliteConversationStore.js';
 
 migrate();
 const sqlite = new SqliteMemoryStore();
@@ -31,7 +33,8 @@ const memoryStore = {
   delete: (ids: string[]) => sqlite.delete(ids),
 };
 const prefs = new UserPrefsStore(sqlite.rawDb);
-const frank = makeFrank(memoryStore);
+const conversationStore = new SqliteConversationStore(sqlite.rawDb);
+const frank = makeFrank(memoryStore, conversationStore);
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL ?? 'info' },
   bodyLimit: 20 * 1024 * 1024,
@@ -41,6 +44,8 @@ const app = Fastify({
     return crypto.randomUUID();
   },
 });
+const stt = new GoogleSttProvider();
+const tts = new GoogleTtsProvider();
 
 await app.register(sensible);
 
@@ -172,14 +177,14 @@ app.get('/v1/memory/recent', async (req) => {
 });
 
 // Visit docs/voice-summary.md for explanation
-await sttRoutes(app);
-await ttsRoutes(app);
+await sttRoutes(app, stt);
+await ttsRoutes(app, tts);
 
 await ttsVoicesRoutes(app);
 await prefsTtsRoutes(app, { prefs });
 
-await deviceRoutes(app, frank, { prefs });
-await deviceStreamRoutes(app, frank);
+await deviceRoutes(app, frank, stt, tts, { prefs });
+await deviceStreamRoutes(app, frank, stt, tts);
 
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '0.0.0.0';
