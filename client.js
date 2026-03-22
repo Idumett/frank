@@ -3,6 +3,7 @@ const WebSocket = require('ws');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 const { Porcupine, BuiltinKeyword } = require('@picovoice/porcupine-node');
+const { Cobra } = require('@picovoice/cobra-node');
 const { PvRecorder } = require('@picovoice/pvrecorder-node');
 
 const WS_URL =
@@ -12,8 +13,14 @@ const SPEAKER_DEVICE = process.env.SPEAKER_DEVICE || 'plughw:1,0';
 
 const ACCESS_KEY = process.env.PICOVOICE_ACCESS_KEY;
 const MIC_DEVICE_INDEX = Number(process.env.MIC_DEVICE_INDEX || '-1');
-const SENSITIVITY = Number(process.env.PORCUPINE_SENSITIVITY || '0.65');
+const PORCUPINE_SENSITIVITY = Number(process.env.PORCUPINE_SENSITIVITY || '0.65');
 const WAKEWORD_PATH = process.env.PORCUPINE_WAKEWORD_PATH || '';
+
+const SAMPLE_RATE = 16000;
+const END_SILENCE_MS = 1400; // how long no speech before stop
+const MAX_RECORDING_MS = 12000; // hard cap
+const START_SPEECH_PROB = 0.55;
+const END_SPEECH_PROB = 0.3;
 
 if (!WS_URL) {
   console.error('Missing FRANK_WS_URL');
@@ -29,12 +36,18 @@ let ws = null;
 let player = null;
 let recorder = null;
 let porcupine = null;
+let cobra = null;
 let loopRunning = false;
 
 let state = 'connecting'; // connecting | ready | recording | waiting_reply
 let wakeEnabled = false;
 let trace = makeTrace();
 let speechFrames = [];
+
+let silenceFramesNeeded = 0;
+let silentFrames = 0;
+let heardSpeech = false;
+let recordingStartedAt = 0;
 
 function log(msg) {
   console.log(`[Frank] ${msg}`);
@@ -90,7 +103,7 @@ function connect() {
     safeSend({
       type: 'hello',
       trace,
-      device: { model: 'rpi', fw: 'wake-v1' },
+      device: { model: 'rpi', fw: 'wake-cobra-v1' },
     });
   });
 
@@ -147,11 +160,16 @@ function connect() {
 
 function initAudio() {
   porcupine = WAKEWORD_PATH
-    ? new Porcupine(ACCESS_KEY, [WAKEWORD_PATH], [SENSITIVITY])
-    : new Porcupine(ACCESS_KEY, [BuiltinKeyword.PORCUPINE], [SENSITIVITY]);
+    ? new Porcupine(ACCESS_KEY, [WAKEWORD_PATH], [PORCUPINE_SENSITIVITY])
+    : new Porcupine(ACCESS_KEY, [BuiltinKeyword.PORCUPINE], [PORCUPINE_SENSITIVITY]);
+
+  cobra = new Cobra(ACCESS_KEY);
 
   recorder = new PvRecorder(porcupine.frameLength, MIC_DEVICE_INDEX);
   recorder.start();
+
+  const frameMs = (porcupine.frameLength / SAMPLE_RATE) * 1000;
+  silenceFramesNeeded = Math.ceil(END_SILENCE_MS / frameMs);
 }
 
 async function audioLoop() {
@@ -172,6 +190,27 @@ async function audioLoop() {
 
       if (state === 'recording') {
         speechFrames.push(Int16Array.from(pcm));
+
+        const speechProb = cobra.process(pcm);
+
+        if (!heardSpeech) {
+          if (speechProb >= START_SPEECH_PROB) {
+            heardSpeech = true;
+            silentFrames = 0;
+          }
+        } else {
+          if (speechProb >= END_SPEECH_PROB) {
+            silentFrames = 0;
+          } else {
+            silentFrames += 1;
+          }
+        }
+
+        const elapsed = Date.now() - recordingStartedAt;
+
+        if ((heardSpeech && silentFrames >= silenceFramesNeeded) || elapsed >= MAX_RECORDING_MS) {
+          await handleAutoStop();
+        }
       }
     } catch {}
   }
@@ -183,15 +222,18 @@ async function handleWakeWord() {
   wakeEnabled = false;
   state = 'recording';
   speechFrames = [];
-  log('Listening... Press ENTER to stop.');
+  silentFrames = 0;
+  heardSpeech = false;
+  recordingStartedAt = Date.now();
+  log('Listening...');
 }
 
-async function handleStop() {
+async function handleAutoStop() {
   if (state !== 'recording') return;
 
   state = 'waiting_reply';
 
-  const wavBuffer = pcmChunksToWav(speechFrames, 16000);
+  const wavBuffer = pcmChunksToWav(speechFrames, SAMPLE_RATE);
 
   safeSend({
     type: 'audio',
@@ -200,6 +242,8 @@ async function handleStop() {
   });
 
   speechFrames = [];
+  silentFrames = 0;
+  heardSpeech = false;
   log('Processing...');
 }
 
@@ -246,12 +290,3 @@ log('Booting...');
 connect();
 initAudio();
 audioLoop().catch(() => {});
-
-process.stdin.resume();
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', () => {
-  handleStop().catch(() => {
-    state = 'ready';
-    wakeEnabled = true;
-  });
-});
