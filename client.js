@@ -1,6 +1,6 @@
 require('dotenv').config();
 const WebSocket = require('ws');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const crypto = require('crypto');
 const { Porcupine, BuiltinKeyword } = require('@picovoice/porcupine-node');
 const { Cobra } = require('@picovoice/cobra-node');
@@ -17,10 +17,13 @@ const PORCUPINE_SENSITIVITY = Number(process.env.PORCUPINE_SENSITIVITY || '0.65'
 const WAKEWORD_PATH = process.env.PORCUPINE_WAKEWORD_PATH || '';
 
 const SAMPLE_RATE = 16000;
-const END_SILENCE_MS = 1400; // how long no speech before stop
-const MAX_RECORDING_MS = 12000; // hard cap
+const END_SILENCE_MS = 1200;
+const MAX_RECORDING_MS = 10000;
 const START_SPEECH_PROB = 0.55;
 const END_SPEECH_PROB = 0.3;
+
+const BEEP_START_PATH = process.env.BEEP_START_PATH || '/home/frank/beep_start.wav';
+const BEEP_STOP_PATH = process.env.BEEP_STOP_PATH || '/home/frank/beep_stop.wav';
 
 if (!WS_URL) {
   console.error('Missing FRANK_WS_URL');
@@ -66,6 +69,20 @@ function safeSend(msg) {
   }
 }
 
+function playBeep(file) {
+  spawn('aplay', ['-q', '-D', SPEAKER_DEVICE, file], {
+    stdio: ['ignore', 'ignore', 'ignore'],
+  });
+}
+
+function playBeepSync(file) {
+  try {
+    execFileSync('aplay', ['-q', '-D', SPEAKER_DEVICE, file], {
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+  } catch {}
+}
+
 function startPlayer() {
   stopPlayer();
 
@@ -103,7 +120,7 @@ function connect() {
     safeSend({
       type: 'hello',
       trace,
-      device: { model: 'rpi', fw: 'wake-cobra-v1' },
+      device: { model: 'rpi', fw: 'wake-cobra-v2' },
     });
   });
 
@@ -220,11 +237,15 @@ async function handleWakeWord() {
   if (state !== 'ready') return;
 
   wakeEnabled = false;
+
+  playBeepSync(BEEP_START_PATH);
+
   state = 'recording';
   speechFrames = [];
   silentFrames = 0;
   heardSpeech = false;
   recordingStartedAt = Date.now();
+
   log('Listening...');
 }
 
@@ -232,6 +253,8 @@ async function handleAutoStop() {
   if (state !== 'recording') return;
 
   state = 'waiting_reply';
+
+  playBeep(BEEP_STOP_PATH);
 
   const wavBuffer = pcmChunksToWav(speechFrames, SAMPLE_RATE);
 
