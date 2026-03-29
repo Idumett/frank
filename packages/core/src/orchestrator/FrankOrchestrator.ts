@@ -12,133 +12,191 @@ import {
 import type { FrankDeps } from './types.js';
 import { CallBudget } from './guardrails/callBudget.js';
 import { applyConfidenceTone, enforceShortReply } from './guardrails/shortReply.js';
+import { executeToolCall } from '../tools/executeToolCall.js';
 
 export class FrankOrchestrator {
   constructor(private deps: FrankDeps) {}
 
-  /**
-   * The brain:
-   * UserRequest + image -> AssistantReply
-   */
   async handleUserRequest(request: UserRequest, imageBytes?: Buffer): Promise<AssistantReply> {
-    // console.log('we get to 1');
     const now = new Date().toISOString();
 
     const budget = new CallBudget({ maxVisionCalls: 2, maxLlmCalls: 1 });
+
     const spendVision = () => {
       if (!budget.canCallVision()) return false;
       budget.recordVisionCall();
       return true;
     };
 
-    let ocrRes;
-    let labelsRes;
-    let quality;
+    let ocrRes: PerceptionResult | null = null;
+    let labelsRes: PerceptionResult | null = null;
+    let quality:
+      | {
+          imageQuality: 'good' | 'ok' | 'poor';
+          notes: string[];
+        }
+      | undefined;
+
+    // 1) Vision
     if (imageBytes) {
       quality = await this.deps.quality.assess(imageBytes);
 
-      // 1) Vision calls (parallel) - count calls before spending
       const callArgs = { trace: request.trace, imageBytes, capturedAt: now };
-      const run = (fn: (args: any) => Promise<any>) =>
-        spendVision() ? fn.call(this.deps.vision, callArgs) : Promise.resolve(null);
+
+      const run = async (fn: (args: typeof callArgs) => Promise<PerceptionResult>) => {
+        if (!spendVision()) return null;
+        return fn.call(this.deps.vision, callArgs);
+      };
+
       [ocrRes, labelsRes] = await Promise.all([
         run(this.deps.vision.analyzeOCR),
         run(this.deps.vision.analyzeLabels),
       ]);
     }
 
-    // 2) Merge into one PerceptionResult (contract)
+    // 2) Merge perception
     const perception: PerceptionResult = PerceptionResultSchema.parse({
       trace: request.trace,
       provider: 'gcv',
       capturedAt: now,
-      imageQuality: quality?.imageQuality,
-      imageQualityNotes: quality?.notes,
+      imageQuality: quality?.imageQuality ?? 'good',
+      imageQualityNotes: quality?.notes ?? [],
       ocr: ocrRes?.ocr,
       labels: labelsRes?.labels ?? [],
     });
 
-    // 3) Memory hits (Jarvis mode: use memory for ANY meaningful utterance)
+    // 3) Memory hits
     const userText = request.query?.trim() || request.utterance?.trim() || '';
-    let memoryHits = [] as any[];
+    let memoryHits: any[] = [];
 
     if (userText) {
-      // If user asked anything, search memory using that text
       memoryHits = await this.deps.memory.search(userText, 5);
-    } else if (request.intent === 'recall') {
-      // recall with no query: just return recent-ish hits (optional)
-      memoryHits = await this.deps.memory.search('', 0); // or implement recent() and use that
     }
 
-    // 4) Policy decision
+    // 4) Policy
     const policy = this.deps.policy.decide({
       request,
       perception,
-      quality: quality ?? {
-        imageQuality: 'good',
-        notes: [],
-      },
+      quality: quality ?? { imageQuality: 'good', notes: [] },
       memoryHits,
     });
 
-    // If policy says recapture, respond deterministically (no LLM)
     if (policy.nextAction === 'request_recapture') {
-      const reply: AssistantReply = {
-        trace: request.trace,
-        speak: enforceShortReply(policy.recapturePrompt ?? 'Please try capturing again.'),
-        createdAt: now,
-        suggestedAction: 'recapture',
-        groundedIn: {
-          usedOcr: Boolean(perception.ocr?.fullText?.trim()),
-          usedLabels: (perception.labels?.length ?? 0) > 0,
-          usedMemoryHits: memoryHits.length,
-        },
-      };
-      return AssistantReplySchema.parse(reply);
-    }
-
-    // 5) Generate spoken reply (LLM; grounded)
-    if (!policy.allowLlmCall) {
-      // Deterministic fallback if LLM disabled by policy
-      const fallback = 'Not sure. Try moving closer.';
-      const reply: AssistantReply = {
-        trace: request.trace,
-        speak: enforceShortReply(fallback),
-        createdAt: now,
-        suggestedAction: 'recapture',
-        groundedIn: {
-          usedOcr: Boolean(perception.ocr?.fullText?.trim()),
-          usedLabels: (perception.labels?.length ?? 0) > 0,
-          usedMemoryHits: memoryHits.length,
-        },
-      };
-      return AssistantReplySchema.parse(reply);
-    }
-
-    if (!budget.canCallLlm())
       return AssistantReplySchema.parse({
         trace: request.trace,
-        speak: 'Too many tries. Please try again in a moment.',
+        speak: enforceShortReply(policy.recapturePrompt ?? 'Please try again.'),
+        createdAt: now,
         suggestedAction: 'recapture',
+        confidence: policy.confidence,
+        reasons: policy.reasons,
+        recapturePrompt: policy.recapturePrompt,
+        groundedIn: {
+          usedOcr: Boolean(perception.ocr?.fullText?.trim()),
+          usedLabels: (perception.labels?.length ?? 0) > 0,
+          usedMemoryHits: memoryHits.length,
+        },
       });
+    }
+
+    if (!policy.allowLlmCall) {
+      return AssistantReplySchema.parse({
+        trace: request.trace,
+        speak: 'Not sure. Try moving closer.',
+        createdAt: now,
+        suggestedAction: 'recapture',
+        confidence: 'low',
+        reasons: ['llm_disabled_by_policy'],
+        groundedIn: {
+          usedOcr: Boolean(perception.ocr?.fullText?.trim()),
+          usedLabels: (perception.labels?.length ?? 0) > 0,
+          usedMemoryHits: memoryHits.length,
+        },
+      });
+    }
+
+    if (!budget.canCallLlm()) {
+      return AssistantReplySchema.parse({
+        trace: request.trace,
+        speak: 'I need a moment. Try again shortly.',
+        createdAt: now,
+        suggestedAction: 'none',
+        confidence: 'low',
+        reasons: ['call_budget_exceeded_llm'],
+        groundedIn: {
+          usedOcr: Boolean(perception.ocr?.fullText?.trim()),
+          usedLabels: (perception.labels?.length ?? 0) > 0,
+          usedMemoryHits: memoryHits.length,
+        },
+      });
+    }
     budget.recordLlmCall();
 
-    const compactMemoryHits = memoryHits.map((m) => `${m.title}: ${m.content}`).slice(0, 5);
+    // 5) Conversation context
     const conversationTurns = request.trace.sessionId
       ? await this.deps.conversation.getRecent(request.trace.sessionId, 6)
       : [];
-    const conversationContext = conversationTurns.map((t) => `${t.role}: ${t.text}`).join(' | ');
 
-    const llmReply = await this.deps.llm.generateReply({
+    const conversationContext = conversationTurns
+      .map((t) => `${t.role === 'user' ? 'User' : 'Frank'}: ${t.text}`)
+      .join('\n');
+
+    const compactMemoryHits = memoryHits.map((m) => `${m.title}: ${m.content}`).slice(0, 5);
+
+    const availableTools = this.deps.tools.list().map((t) => ({
+      name: t.name,
+      description: t.description,
+    }));
+
+    // 6) Single LLM call: answer OR tool_call
+    const decision = await this.deps.llm.decideToolOrAnswer({
       trace: request.trace,
       userUtterance: request.utterance,
       perception,
       memoryHits: compactMemoryHits,
       conversationContext,
+      availableTools,
       now,
     });
 
-    //Save conversation context
+    // 7) Turn decision into spoken text
+    let rawSpeak: string;
+
+    if (decision.type === 'answer') {
+      rawSpeak = decision.speak;
+    } else {
+      const toolResult = await executeToolCall({
+        call: decision,
+        registry: this.deps.tools,
+      });
+
+      rawSpeak = toolResult.speak;
+    }
+
+    // 8) Tone + shortness
+    const toned = applyConfidenceTone({
+      text: rawSpeak,
+      confidence: policy.confidence ?? 'medium',
+      recaptureHint: policy.recapturePrompt ? 'Move closer.' : undefined,
+    });
+
+    const speak = enforceShortReply(toned);
+
+    const reply: AssistantReply = AssistantReplySchema.parse({
+      trace: request.trace,
+      speak,
+      createdAt: now,
+      confidence: policy.confidence ?? 'medium',
+      reasons: policy.reasons,
+      recapturePrompt: policy.recapturePrompt,
+      suggestedAction: policy.confidence === 'low' ? 'recapture' : 'none',
+      groundedIn: {
+        usedOcr: Boolean(perception.ocr?.fullText?.trim()),
+        usedLabels: (perception.labels?.length ?? 0) > 0,
+        usedMemoryHits: compactMemoryHits.length,
+      },
+    });
+
+    // 9) Save conversation turns
     if (request.trace.sessionId) {
       if (request.utterance?.trim()) {
         await this.deps.conversation.addTurn({
@@ -152,33 +210,12 @@ export class FrankOrchestrator {
       await this.deps.conversation.addTurn({
         sessionId: request.trace.sessionId,
         role: 'assistant',
-        text: llmReply.speak,
+        text: reply.speak,
         createdAt: now,
       });
     }
 
-    // confidence language + hard shorten
-    const toned = applyConfidenceTone({
-      text: llmReply.speak,
-      confidence: policy.confidence ?? 'medium',
-      recaptureHint: policy.recapturePrompt
-        ? // keep the hint short
-          'Move closer.'
-        : undefined,
-    });
-
-    const speak = enforceShortReply(toned);
-
-    const reply: AssistantReply = AssistantReplySchema.parse({
-      ...llmReply,
-      speak,
-      // Keep the reply deterministic in suggestedAction for low confidence
-      suggestedAction:
-        policy.confidence === 'low' ? 'recapture' : (llmReply.suggestedAction ?? 'none'),
-    });
-
-    // 6) Store memory (guardrail: DO NOT store when confidence is low)
-    // Jarvis mode helps even if unclear, but we avoid dirty memory.
+    // 10) Store memory
     const canStore = policy.shouldStore && policy.confidence !== 'low';
 
     if (canStore) {

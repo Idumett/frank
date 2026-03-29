@@ -6,13 +6,12 @@ import type {
   Trace,
   UserRequest,
 } from '@frank/contracts';
-import { ConversationStore } from '../conversation/types.js';
+import type { ToolRegistryLike } from '../tools/types.js';
+import type { ConversationStore } from '../conversation/types.js';
 
 export interface MemoryStore {
   add(item: MemoryItem): Promise<void>;
   search(query: string, limit: number): Promise<MemoryItem[]>;
-  recent(limit: number): Promise<MemoryItem[]>;
-  delete(ids: string[]): Promise<number>;
 }
 
 export interface PolicyEngine {
@@ -47,17 +46,19 @@ export interface FrankDeps {
     }): Promise<PerceptionResult>;
   };
   llm: {
-    generateReply(args: {
+    decideToolOrAnswer(args: {
       trace: Trace;
       userUtterance?: string;
       perception: PerceptionResult;
       memoryHits: string[];
-      conversationContext: string;
+      conversationContext?: string;
+      availableTools: { name: string; description: string }[];
       now: string;
-    }): Promise<AssistantReply>;
+    }): Promise<any>;
   };
   memory: MemoryStore;
-  conversation: ConversationStore;
   policy: PolicyEngine;
   quality: QualityGater;
+  conversation: ConversationStore;
+  tools: ToolRegistryLike;
 }

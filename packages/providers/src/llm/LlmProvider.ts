@@ -1,11 +1,13 @@
-import type { AssistantReply, PerceptionResult, Trace } from '@frank/contracts';
+import type { PerceptionResult, ToolDecision, Trace } from '@frank/contracts';
 
 export interface LlmProvider {
-  generateReply(args: {
+  decideToolOrAnswer(args: {
     trace: Trace;
     userUtterance?: string;
     perception: PerceptionResult;
     memoryHits: string[];
+    conversationContext?: string;
+    availableTools: { name: string; description: string }[];
     now: string;
-  }): Promise<AssistantReply>;
+  }): Promise<ToolDecision>;
 }
