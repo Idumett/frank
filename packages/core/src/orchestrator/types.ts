@@ -7,6 +7,7 @@ import type {
   UserRequest,
 } from '@frank/contracts';
 import { ConversationStore } from '../conversation/types.js';
+import type { ObservabilityStore } from '../observability/types.js';
 
 export interface MemoryStore {
   add(item: MemoryItem): Promise<void>;
@@ -58,6 +59,7 @@ export interface FrankDeps {
   };
   memory: MemoryStore;
   conversation: ConversationStore;
+  observability: ObservabilityStore;
   policy: PolicyEngine;
   quality: QualityGater;
 }

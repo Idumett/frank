@@ -4,6 +4,7 @@ import {
   ConversationStore,
   FrankOrchestrator,
   MemoryStore,
+  ObservabilityStore,
 } from '@frank/core';
 import { GcvVisionProvider, GeminiLlmProvider } from '@frank/providers';
 import { MemoryItem } from '@frank/contracts';
@@ -20,6 +21,7 @@ const defaultMemoryStore = {
 export function makeFrank(
   memoryStore: MemoryStore = defaultMemoryStore,
   conversationStore: ConversationStore,
+  observabilityStore: ObservabilityStore,
 ) {
   return new FrankOrchestrator({
     vision: new GcvVisionProvider(),
@@ -28,5 +30,6 @@ export function makeFrank(
     quality: new BasicQualityGater(),
     policy: new BasicPolicyEngine(),
     conversation: conversationStore,
+    observability: observabilityStore,
   });
 }

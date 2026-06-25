@@ -22,6 +22,8 @@ import { deviceStreamRoutes } from './routes/deviceStream.js';
 import { prefsTtsRoutes } from './routes/prefs.js';
 import { ttsVoicesRoutes } from './routes/ttsVoices.js';
 import { GoogleSttProvider, GoogleTtsProvider } from '@frank/providers';
+import { NoopObservabilityStore } from '@frank/core';
+import { SqliteObservabilityStore } from './observability/SqliteObservabilityStore.js';
 import { SqliteConversationStore } from './conversation/SqliteConversationStore.js';
 
 migrate();
@@ -34,7 +36,11 @@ const memoryStore = {
 };
 const prefs = new UserPrefsStore(sqlite.rawDb);
 const conversationStore = new SqliteConversationStore(sqlite.rawDb);
-const frank = makeFrank(memoryStore, conversationStore);
+const observabilityStore =
+  process.env.OBSERVABILITY_ENABLED === 'true'
+    ? new SqliteObservabilityStore(sqlite.rawDb)
+    : new NoopObservabilityStore();
+const frank = makeFrank(memoryStore, conversationStore, observabilityStore);
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL ?? 'info' },
   bodyLimit: 20 * 1024 * 1024,

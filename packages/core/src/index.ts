@@ -8,3 +8,4 @@ export * from './prefs/types.js';
 export * from './prefs/resolveTtsPrefs.js';
 export * from './ux/deviceReply.js';
 export * from './conversation/index.js';
+export * from './observability/index.js';

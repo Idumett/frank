@@ -55,6 +55,22 @@ export function migrate() {
 
     CREATE INDEX IF NOT EXISTS idx_conversation_turns_session_created
     ON conversation_turns(session_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS request_traces (
+      request_id TEXT PRIMARY KEY,
+      session_id TEXT,
+      source TEXT,
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      total_ms INTEGER,
+      input_json TEXT,
+      output_json TEXT,
+      error TEXT,
+      stages_json TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_request_traces_session_started
+    ON request_traces(session_id, started_at DESC);
   `);
 
   // embeddings: optional (for later semantic search)
