@@ -6,14 +6,24 @@ export async function diagRoutes(
   deps: { observability: SqliteObservabilityStore },
 ) {
   app.get('/v1/diag/traces', async (req) => {
-    const q = req.query as {
+    const query = req.query as {
+      source?: 'analyze' | 'device_frame' | 'device_stream';
+      sessionId?: string;
+      success?: string;
+      from?: string;
+      to?: string;
       limit?: string;
     };
 
-    const limit = clampLimit(q.limit, 50);
-
     return {
-      traces: deps.observability.getRecent(limit),
+      traces: deps.observability.getRecent({
+        source: query.source,
+        sessionId: query.sessionId,
+        success: query.success === undefined ? undefined : query.success === 'true',
+        from: query.from,
+        to: query.to,
+        limit: clampLimit(query.limit, 50),
+      }),
     };
   });
 

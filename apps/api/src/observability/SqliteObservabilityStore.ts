@@ -1,4 +1,4 @@
-import type { ObservabilityStore, RequestTraceRecord, TraceStage } from '@frank/core';
+import type { ObservabilityStore, RequestTraceRecord, TraceFilters, TraceStage } from '@frank/core';
 
 type DbLike = {
   prepare: (sql: string) => any;
@@ -115,17 +115,49 @@ export class SqliteObservabilityStore implements ObservabilityStore {
       .run(endedAt, totalMs, error, requestId);
   }
 
-  getRecent(limit = 50) {
+  getRecent(filters: TraceFilters = {}) {
+    const conditions: string[] = [];
+    const values: unknown[] = [];
+
+    if (filters.source) {
+      conditions.push('source = ?');
+      values.push(filters.source);
+    }
+
+    if (filters.sessionId) {
+      conditions.push('session_id = ?');
+      values.push(filters.sessionId);
+    }
+
+    if (filters.success !== undefined) {
+      conditions.push(filters.success ? 'error IS NULL' : 'error IS NOT NULL');
+    }
+
+    if (filters.from) {
+      conditions.push('started_at >= ?');
+      values.push(filters.from);
+    }
+
+    if (filters.to) {
+      conditions.push('started_at <= ?');
+      values.push(filters.to);
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const limit = Math.min(filters.limit ?? 50, 200);
+
     const rows = this.db
       .prepare(
         `
-          SELECT *
-          FROM request_traces
-          ORDER BY started_at DESC
-          LIMIT ?
+        SELECT *
+        FROM request_traces
+        ${where}
+        ORDER BY started_at DESC
+        LIMIT ?
         `,
       )
-      .all(limit);
+      .all(...values, limit);
 
     return rows.map(rowToTrace);
   }

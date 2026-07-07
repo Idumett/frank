@@ -21,6 +21,15 @@ export type RequestTraceRecord = {
   stages: TraceStage[];
 };
 
+export type TraceFilters = {
+  source?: RequestTraceRecord['source'];
+  sessionId?: string;
+  success?: boolean;
+  from?: string;
+  to?: string;
+  limit?: number;
+};
+
 export interface ObservabilityStore {
   start(record: RequestTraceRecord): Promise<void>;
   addStage(requestId: string, stage: TraceStage): Promise<void>;
