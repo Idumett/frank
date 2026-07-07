@@ -21,6 +21,7 @@ import { deviceRoutes } from './routes/device.js';
 import { deviceStreamRoutes } from './routes/deviceStream.js';
 import { prefsTtsRoutes } from './routes/prefs.js';
 import { ttsVoicesRoutes } from './routes/ttsVoices.js';
+import { diagRoutes } from './routes/diag.js';
 import { GoogleSttProvider, GoogleTtsProvider } from '@frank/providers';
 import { NoopObservabilityStore } from '@frank/core';
 import { SqliteObservabilityStore } from './observability/SqliteObservabilityStore.js';
@@ -188,6 +189,10 @@ await ttsRoutes(app, tts);
 
 await ttsVoicesRoutes(app);
 await prefsTtsRoutes(app, { prefs });
+
+if (observabilityStore instanceof SqliteObservabilityStore) {
+  await diagRoutes(app, { observability: observabilityStore });
+}
 
 await deviceRoutes(app, frank, stt, tts, { prefs });
 await deviceStreamRoutes(app, frank, stt, tts);
