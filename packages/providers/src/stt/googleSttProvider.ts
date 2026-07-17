@@ -16,20 +16,48 @@ export class GoogleSttProvider implements SttProvider {
   }
 
   async transcribe(args: {
-    trace: Trace;
-    audioBytes: Buffer;
-  }): Promise<{ transcript: string; confidence?: number }> {
-    const [res] = await this.client.recognize({
-      recognizer: this.recognizer,
-      content: args.audioBytes,
-    });
+  trace: Trace;
+  audioBytes: Buffer;
+  mimeType?: string;
+  languageCode?: string;
+  sampleRateHertz?: number;
+}): Promise<{ transcript: string; confidence?: number }> {
+  const [res] = await this.client.recognize({
+    recognizer: this.recognizer,
+    content: args.audioBytes,
+    config: {
+      autoDecodingConfig: {},
+      languageCodes: [args.languageCode ?? 'en-GB'],
+      model: 'long',
+    },
+    // configMask: '*',
+  });
 
-    // v2 nesting is slightly different: results -> alternatives
-    const alt = res.results?.[0]?.alternatives?.[0];
+  const alternatives =
+    res.results?.flatMap(result => result.alternatives ?? []) ?? [];
 
-    return {
-      transcript: alt?.transcript ?? '',
-      confidence: alt?.confidence ?? undefined,
-    };
-  }
+  const transcript = alternatives
+    .map(alternative => alternative.transcript ?? '')
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const confidenceValues = alternatives
+    .map(alternative => alternative.confidence)
+    .filter(
+      (confidence): confidence is number =>
+        typeof confidence === 'number'
+    );
+
+  const confidence =
+    confidenceValues.length > 0
+      ? confidenceValues.reduce((sum, value) => sum + value, 0) /
+        confidenceValues.length
+      : undefined;
+
+  return {
+    transcript,
+    confidence,
+  };
+}
 }
