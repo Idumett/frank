@@ -210,6 +210,14 @@ Next steps:
 
 > If you remember nothing else: **Frank is one brain with many mouths and ears.**
 
+
+## Copyright
+
+This repository is published to showcase the project and its implementation.
+
+All source code remains the intellectual property of Hilary Asogwa. No permission is granted to copy, modify, redistribute, or use this software without prior written consent.
+
+© 2026 Hilary Asogwa. All Rights Reserved.
 ---
 
 _End of document — valid as of 2026-01-19_
