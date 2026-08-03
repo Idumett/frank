@@ -1,223 +1,418 @@
 # Frank — System Overview & API Map
 
-**As of:** **2026-01-19**
+**As of:** **2026-08-03**
 
-Frank is a **personal visual reasoning assistant** designed to help blind and visually impaired users by combining computer vision, language models, memory, and voice.
+Frank is a **personal visual reasoning assistant** designed to help blind and visually impaired users by combining computer vision, language models, memory, conversation context and natural voice interaction.
 
-Frank is intentionally built as a **provider-agnostic brain** with **multiple client adapters** (apps, hardware, streaming devices) that all route into the same core logic.
+Frank is intentionally built as a **provider-agnostic reasoning engine** with **multiple client adapters** (Android, Raspberry Pi and future devices) that all route into the same core logic.
 
-This document describes **what exists today**, **how it’s structured**, and **how devices interact with it**.
-
----
-
-## 1. High-level architecture
-
-Frank is split into four conceptual layers:
-
-[ Devices / Apps ]
-|
-v
-[ API Adapters (HTTP / WS) ]
-|
-v
-[ Frank Core (Brain) ]
-|
-v
-[ Providers (Vision / LLM / Voice) ]
-
-### Key principle
-
-> **There is exactly ONE brain.**  
-> All routes and protocols are just adapters into that brain.
+This document describes the current architecture, available APIs and how the system is organised.
 
 ---
 
-## 2. The Core (the actual product)
+# 1. High-level architecture
 
-### FrankOrchestrator
+```
+        Android App
+        Raspberry Pi
+      Future Wearables
+             │
+             ▼
+     HTTP / WebSocket API
+             │
+             ▼
+      Frank Orchestrator
+             │
+ ┌───────────┼────────────┐
+ ▼           ▼            ▼
+Vision     Memory     Conversation
+             │
+             ▼
+        LLM Reasoning
+             │
+             ▼
+        Assistant Reply
+```
+
+### Design principle
+
+> **Frank has one brain.**
+> Every client talks to the same reasoning engine.
+
+The Android app, Raspberry Pi and future devices should behave identically because none of them contain assistant logic.
+
+---
+
+# 2. Frank Core
 
 **Location:** `packages/core`
 
-The orchestrator is the single entry point for intelligence:
+The orchestrator is the single entry point for intelligence.
 
 ```ts
 handleUserRequest(
-  request: UserRequest,
-  imageBytes: Buffer
-) -> AssistantReply
+    request: UserRequest,
+    imageBytes?: Buffer
+): Promise<AssistantReply>
 ```
 
-What it does:
+The orchestrator currently performs:
 
-- image quality assessment
-- OCR + object/label detection (parallel)
-- policy decision (Jarvis mode)
-- LLM reasoning (grounded, short replies)
-- memory read/write decisions
-- returns a final AssistantReply
+* Image quality assessment
+* OCR
+* Object / label detection
+* Memory retrieval
+* Conversation history retrieval
+* Policy evaluation
+* Grounded LLM reasoning
+* Conversation storage
+* Optional long-term memory storage
+* Structured observability logging
+* Final response generation
 
-This logic is deterministic, boring, and testable by design.
+The core intentionally contains no provider-specific code.
 
-## 3. Providers (Google-only for now)
+---
+
+# 3. Providers
 
 **Location:** `packages/providers`
 
-**Current providers**:
+Current providers:
 
-- Vision: Google Cloud Vision (OCR + labels)
-- LLM: Google Gemini
-- TTS: Google Text-to-Speech
-- STT: Google Speech-to-Text
+### Vision
 
-All provider responses are mapped into Frank’s internal contracts.
-No provider-specific objects leak into the core.
+* Google Cloud Vision OCR
+* Google Cloud Vision Labels
 
-## 4. Internal contracts vs external protocol
+### Language
 
-**Internal contracts** `(@frank/contracts)`
+* Google Gemini
 
-Used inside Frank only:
+### Speech
 
-- UserRequest
-- PerceptionResult
-- PolicyDecision
-- AssistantReply
-- MemoryItem
+* Google Speech-to-Text
+* Google Text-to-Speech
 
-These define how the brain thinks.
+Providers are interchangeable.
 
-**External protocol** `(@frank/protocol)`
-Used between Frank ↔ devices:
+The core only consumes Frank contracts.
 
-- ClientMsg
-- ServerMsg
-- protocol versioning
+---
 
-These defines how devices talk to Frank, independent of providers or internals.
+# 4. Internal contracts
 
-## 5. Ways to call Frank (client options)
+**Location:** `packages/contracts`
 
-Frank supports multiple client entry points.
-These are not different products — they are different adapters to the same orchestrator.
+Important contracts include:
 
-### Option 1: Simple client (easiest)
+* UserRequest
+* AssistantReply
+* MemoryItem
+* PerceptionResult
+* PolicyDecision
 
-**Device** → `/v1/device/frame`
+These define how Frank thinks internally.
 
-- one photo per request
-- server sends audio + metadata back
-- best for v1 hardware
+---
 
-### Option 2: App client (phone/web)
+# 5. External protocol
 
-**Client** → `/v1/analyze + /v1/tts (+ /v1/stt)`
+**Location:** `packages/protocol`
 
-- more control for UX
-- flexible playback and interruption handling
-- best for mobile/web apps
+Defines how external devices communicate with Frank.
 
-### Option 3: Streaming glasses
+Examples:
 
-**Device** → `WS /v1/device/stream`
+* ClientMsg
+* ServerMsg
+* WebSocket messages
+* Protocol versioning
 
-- continuous frames
-- persistent connection
-- lower latency, more “live” feel
+This allows devices to evolve independently of the brain.
 
-Important invariant
-All of these options call the **SAME** orchestrator in the end.
+---
 
-```s
-/v1/analyze
-/v1/device/frame
+# 6. Client adapters
+
+Frank currently supports multiple entry points.
+
+## Android App
+
+```
+POST /v1/analyze
+POST /v1/stt
+POST /v1/tts
+```
+
+Designed for:
+
+* Push-to-talk
+* Camera capture
+* Conversation mode
+* Natural mobile UX
+
+---
+
+## Raspberry Pi
+
+```
 WS /v1/device/stream
-        |
-        v
+```
+
+Features:
+
+* Wake word detection (Porcupine)
+* Voice activity detection (Cobra)
+* Automatic recording
+* Automatic playback
+* Streaming responses
+
+---
+
+## Device Frame API
+
+```
+POST /v1/device/frame
+```
+
+Simple request-response endpoint intended for embedded devices.
+
+---
+
+### Important invariant
+
+All clients eventually execute:
+
+```
 FrankOrchestrator.handleUserRequest()
 ```
 
-## 6. Existing API routes (summary)
+No client contains reasoning logic.
 
-**Core / App routes**
-`POST /v1/analyze`
-`POST /v1/tts`
-`POST /v1/stt (optional)`
-`GET /health`
+---
 
-**Memory routes**
-`POST /v1/memory/add`
-`POST /v1/memory/search`
-`POST /v1/memory/delete`
-`GET /v1/memory/recent`
+# 7. Current API
 
-**Device routes**
-`POST /v1/device/frame`
-`WS /v1/device/stream`
+## Core
 
-## 7. Guardrails currently implemented
+```
+POST /v1/analyze
+POST /v1/tts
+POST /v1/stt
+GET  /health
+```
 
-As of today, Frank includes:
+---
 
-- rate limiting / cooldown
-- provider call budget per request
-- image quality gating
-- Jarvis mode (answers even if image is poor when user asked something specific)
-- hallucination prevention (LLM grounded only in OCR, labels, memory)
-- hard short-reply enforcement
-- confidence language (“Not sure.”)
-- no memory storage on low confidence
-- structured logging
+## Memory
 
-## 8. What is intentionally NOT built yet
+```
+POST /v1/memory/add
+POST /v1/memory/search
+POST /v1/memory/delete
+GET  /v1/memory/recent
+```
 
-By design, Frank does not yet include:
+---
 
-- persistent device sessions
-- true provider-level cancellation
-- binary WebSocket frames (base64 for now)
-- mobile or web UI
-- hardware UX
-- embeddings-based memory search
-- personalization tuning
+## Device
 
-These are deferred until UX validation.
+```
+POST /v1/device/frame
+WS   /v1/device/stream
+```
 
-## 9. Current development stage
+---
 
-Frank is currently at:
+## Diagnostics
 
-- Backend complete, evaluation + UX-ready
+```
+GET /v1/diag/traces
+GET /v1/diag/traces/:requestId
+GET /v1/diag/session/:sessionId
+```
 
-Next steps:
+These routes expose detailed request observability for development and debugging.
 
-- evaluation harness and tests
-- thin UX (camera + push-to-talk)
-- real user feedback
-- policy and prompt iteration
-- only then → hardware polish
+---
 
-## 10. Mental model to keep
+# 8. Conversation system
 
-`@frank/core` → the brain
+Frank maintains short-term conversation context.
 
-`@frank/contracts` → brain language
+Conversation history is used to resolve follow-up questions naturally.
 
-`@frank/providers` → external services
+Example:
 
-`@frank/protocol` → device language
+> "Tell me more."
 
-`API routes` → adapters, not logic
+instead of asking:
 
-> If you remember nothing else: **Frank is one brain with many mouths and ears.**
+> "Tell you more about what?"
 
+Recent conversation is retrieved before LLM reasoning and updated after every successful response.
 
-## Copyright
+Conversation context is separate from long-term memory.
+
+---
+
+# 9. Memory system
+
+Frank currently supports long-term memory.
+
+Memory is used for:
+
+* Remembered facts
+* User preferences
+* Important information
+* Future recall
+
+Memory retrieval happens before reasoning.
+
+Low-confidence responses are intentionally not stored.
+
+---
+
+# 10. Observability
+
+Frank includes a full request tracing system.
+
+Every request records:
+
+* Request metadata
+* Session
+* Timing
+* Every processing stage
+* Stage durations
+* Errors
+* Final response
+
+Typical stages include:
+
+* quality.assess
+* vision.ocr
+* vision.labels
+* memory.search
+* policy.decide
+* conversation.get_recent
+* llm.generate_reply
+* conversation.add_user_turn
+* conversation.add_assistant_turn
+
+Observability exists solely for development and can be disabled without affecting the core assistant.
+
+---
+
+# 11. Guardrails
+
+Current guardrails include:
+
+* Provider call budgets
+* Image quality assessment
+* Confidence-aware responses
+* Hallucination reduction
+* Grounding using OCR, labels, memory and conversation
+* Short response enforcement
+* Low-confidence memory protection
+* Structured request tracing
+
+---
+
+# 12. Current architecture principles
+
+Frank is intentionally built around:
+
+* One reasoning engine
+* Thin clients
+* Provider abstraction
+* Deterministic orchestration
+* Clear contracts
+* Easy extensibility
+
+The long-term goal is to allow additional providers and devices without modifying the assistant's reasoning.
+
+---
+
+# 13. Current development stage
+
+Current status:
+
+* ✅ Core reasoning engine
+* ✅ Android client
+* ✅ Raspberry Pi voice client
+* ✅ Conversation context
+* ✅ Long-term memory
+* ✅ Structured observability
+* ✅ OCR + scene understanding
+* ✅ Speech pipeline
+
+Current focus:
+
+* Improve reasoning quality
+* Reduce response latency
+* Improve prompt engineering
+* Better memory retrieval
+* UX refinement
+* Tool integration (calendar, weather, Spotify, etc.)
+
+---
+
+# 14. Future roadmap
+
+Planned work includes:
+
+* Tool calling architecture
+* Calendar integration
+* Weather
+* Music control
+* Alarm and timer support
+* Semantic memory (embeddings)
+* Binary WebSocket streaming
+* Offline capabilities where practical
+* Wearable device support
+* Personalisation
+
+These additions will extend Frank's abilities without changing the core architecture.
+
+---
+
+# Mental model
+
+```
+@frank/core
+        ↓
+     The Brain
+
+@frank/contracts
+        ↓
+ Brain's Internal Language
+
+@frank/providers
+        ↓
+ External AI Services
+
+@frank/protocol
+        ↓
+ Device Communication
+
+API Routes
+        ↓
+ Thin Adapters
+```
+
+> **Frank is one brain with many ears, eyes and voices.**
+
+---
+
+# Copyright
 
 This repository is published to showcase the project and its implementation.
 
-All source code remains the intellectual property of Hilary Asogwa. No permission is granted to copy, modify, redistribute, or use this software without prior written consent.
+All source code remains the intellectual property of **Hilary Asogwa**. No permission is granted to copy, modify, redistribute, or use this software without prior written consent.
 
-© 2026 Hilary Asogwa. All Rights Reserved.
+**© 2026 Hilary Asogwa. All Rights Reserved.**
+
 ---
 
-_End of document — valid as of 2026-01-19_
+*End of document — valid as of 2026-08-03*
