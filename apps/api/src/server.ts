@@ -56,6 +56,26 @@ const tts = new GoogleTtsProvider();
 
 await app.register(sensible);
 
+const demoAccessToken = process.env.DEMO_ACCESS_TOKEN?.trim();
+if (process.env.NODE_ENV === 'production' && !demoAccessToken) {
+  throw new Error('DEMO_ACCESS_TOKEN is required in production');
+}
+
+app.addHook('onRequest', async (req, reply) => {
+  if (!demoAccessToken || req.url === '/health') return;
+
+  const authorization = req.headers.authorization;
+  const expected = `Bearer ${demoAccessToken}`;
+  const authorized =
+    typeof authorization === 'string' &&
+    authorization.length === expected.length &&
+    crypto.timingSafeEqual(Buffer.from(authorization), Buffer.from(expected));
+
+  if (!authorized) {
+    return reply.code(401).send({ error: 'Unauthorized' });
+  }
+});
+
 async function normalizeImage(imageBytes: Buffer) {
   return await sharp(imageBytes)
     .rotate() // respect EXIF orientation

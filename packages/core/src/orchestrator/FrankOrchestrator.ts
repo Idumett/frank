@@ -291,7 +291,27 @@ export class FrankOrchestrator {
           labelCount: perception.labels?.length ?? 0,
         },
       );
-      //Save conversation context
+      // confidence language + hard shorten
+      const toned = applyConfidenceTone({
+        text: llmReply.speak,
+        confidence: policy.confidence ?? 'medium',
+        recaptureHint: policy.recapturePrompt
+          ? // keep the hint short
+            'Move closer.'
+          : undefined,
+      });
+
+      const speak = enforceShortReply(toned);
+
+      const reply: AssistantReply = AssistantReplySchema.parse({
+        ...llmReply,
+        speak,
+        // Keep the reply deterministic in suggestedAction for low confidence
+        suggestedAction:
+          policy.confidence === 'low' ? 'recapture' : (llmReply.suggestedAction ?? 'none'),
+      });
+
+      // Save conversation context after the final reply has been created.
       if (request.trace.sessionId) {
         if (request.utterance?.trim()) {
           await stage(
@@ -319,26 +339,6 @@ export class FrankOrchestrator {
           { sessionId: request.trace.sessionId },
         );
       }
-
-      // confidence language + hard shorten
-      const toned = applyConfidenceTone({
-        text: llmReply.speak,
-        confidence: policy.confidence ?? 'medium',
-        recaptureHint: policy.recapturePrompt
-          ? // keep the hint short
-            'Move closer.'
-          : undefined,
-      });
-
-      const speak = enforceShortReply(toned);
-
-      const reply: AssistantReply = AssistantReplySchema.parse({
-        ...llmReply,
-        speak,
-        // Keep the reply deterministic in suggestedAction for low confidence
-        suggestedAction:
-          policy.confidence === 'low' ? 'recapture' : (llmReply.suggestedAction ?? 'none'),
-      });
 
       // 6) Store memory (guardrail: DO NOT store when confidence is low)
       // Jarvis mode helps even if unclear, but we avoid dirty memory.
