@@ -13,7 +13,7 @@ if ! swapon --show | grep -q /swapfile; then
 fi
 install -d -m 700 /opt/frank /var/lib/frank /etc/frank
 if [[ ! -d /opt/frank/repo/.git ]]; then
-  git clone --branch v1 --single-branch https://github.com/Dansatch/frank.git /opt/frank/repo
+  git clone --branch v1 --single-branch git@github.com:Dansatch/frank.git /opt/frank/repo
 fi
 /opt/frank/repo/deploy/gcp/install-ops.sh /opt/frank/repo
 /usr/local/sbin/frank-update
