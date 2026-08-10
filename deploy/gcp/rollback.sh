@@ -6,6 +6,8 @@ if ! docker inspect frank-previous >/dev/null 2>&1; then
   echo 'No previous container is available' >&2
   exit 1
 fi
+previous_image=$(docker inspect --format '{{.Config.Image}}' frank-previous)
+previous_revision=${previous_image##*:}
 docker rm -f frank-failed >/dev/null 2>&1 || true
 docker stop frank >/dev/null
 docker rename frank frank-failed
@@ -14,3 +16,5 @@ docker update --restart unless-stopped frank >/dev/null
 docker start frank >/dev/null
 docker restart caddy >/dev/null
 curl -fsS --retry 10 --retry-delay 2 --retry-connrefused "https://$(. /etc/frank/deployment.env; echo "$DOMAIN")/health"
+printf '%s\n' "$previous_revision" > /var/lib/frank/deployed-revision
+printf 'Rolled back to %s\n' "$previous_revision"
