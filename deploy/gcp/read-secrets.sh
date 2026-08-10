@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+[[ -f /etc/frank/deployment.env ]] && . /etc/frank/deployment.env
 PROJECT_ID=${PROJECT_ID:?PROJECT_ID is required}
 metadata_token() {
   curl -fsS -H 'Metadata-Flavor: Google' \
