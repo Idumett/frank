@@ -1,5 +1,7 @@
 #!/bin/bash
 set -euo pipefail
+exec 9>/run/lock/frank-deploy.lock
+flock -n 9 || exit 0
 install -d -m 700 /var/backups/frank
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 target=/var/backups/frank/frank-$stamp.db
