@@ -25,6 +25,7 @@ import { diagRoutes } from './routes/diag.js';
 import { GoogleSttProvider, GoogleTtsProvider } from '@frank/providers';
 import { NoopObservabilityStore } from '@frank/core';
 import { SqliteObservabilityStore } from './observability/SqliteObservabilityStore.js';
+import { observedStage } from './observability/stage.js';
 import { SqliteConversationStore } from './conversation/SqliteConversationStore.js';
 
 migrate();
@@ -107,12 +108,40 @@ app.post('/v1/analyze', async (req) => {
   });
 
   const body = BodySchema.parse(req.body);
-  const imageBytes = await normalizeImage(Buffer.from(body.imageBase64, 'base64'));
+  const sourceBytes = Buffer.from(body.imageBase64, 'base64');
+  await observabilityStore.start({
+    requestId: body.trace.requestId,
+    sessionId: body.trace.sessionId,
+    source: 'analyze',
+    startedAt: new Date().toISOString(),
+    input: { intent: body.intent, modality: body.modality, imageBytes: sourceBytes.length },
+    stages: [],
+  });
+
+  let imageBytes: Buffer;
+  try {
+    imageBytes = await observedStage(
+      observabilityStore,
+      body.trace.requestId,
+      'image.normalize',
+      () => normalizeImage(sourceBytes),
+      { inputBytes: sourceBytes.length },
+    );
+  } catch (error: any) {
+    await observabilityStore.fail(body.trace.requestId, error?.message ?? 'Image normalization failed');
+    throw error;
+  }
 
   const key =
     body.trace.sessionId ?? body.trace.requestId ?? (req.ip ? `ip:${req.ip}` : `req:${req.id}`);
   const cooldownMs = Number(process.env.COOLDOWN_MS ?? 1200);
-  const cd = checkCooldown(key, cooldownMs);
+  const cd = await observedStage(
+    observabilityStore,
+    body.trace.requestId,
+    'cooldown.check',
+    async () => checkCooldown(key, cooldownMs),
+    { cooldownMs },
+  );
   if (!cd.allowed) {
     const now = new Date().toISOString();
 
@@ -126,7 +155,12 @@ app.post('/v1/analyze', async (req) => {
       groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 },
     });
 
-    return { trace: body.trace, reply, blockedByCooldown: true, waitMs: cd.waitMs };
+    const output = { trace: body.trace, reply, blockedByCooldown: true, waitMs: cd.waitMs };
+    await observabilityStore.finish(body.trace.requestId, {
+      blockedByCooldown: true,
+      waitMs: cd.waitMs,
+    });
+    return output;
   }
 
   // Structured logs: intent, modality, image size
@@ -204,8 +238,8 @@ app.get('/v1/memory/recent', async (req) => {
 });
 
 // Visit docs/voice-summary.md for explanation
-await sttRoutes(app, stt);
-await ttsRoutes(app, tts);
+await sttRoutes(app, stt, observabilityStore);
+await ttsRoutes(app, tts, observabilityStore);
 
 await ttsVoicesRoutes(app);
 await prefsTtsRoutes(app, { prefs });
@@ -214,8 +248,8 @@ if (observabilityStore instanceof SqliteObservabilityStore) {
   await diagRoutes(app, { observability: observabilityStore });
 }
 
-await deviceRoutes(app, frank, stt, tts, { prefs });
-await deviceStreamRoutes(app, frank, stt, tts);
+await deviceRoutes(app, frank, stt, tts, { prefs, observability: observabilityStore });
+await deviceStreamRoutes(app, frank, stt, tts, observabilityStore);
 
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '0.0.0.0';

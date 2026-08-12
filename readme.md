@@ -229,6 +229,7 @@ WS   /v1/device/stream
 
 ```
 GET /v1/diag/traces
+GET /v1/diag/summary
 GET /v1/diag/traces/:requestId
 GET /v1/diag/session/:sessionId
 ```
@@ -290,6 +291,8 @@ Every request records:
 
 Typical stages include:
 
+* image.normalize
+* stt.transcribe
 * quality.assess
 * vision.ocr
 * vision.labels
@@ -299,6 +302,12 @@ Typical stages include:
 * llm.generate_reply
 * conversation.add_user_turn
 * conversation.add_assistant_turn
+* tts.cache_read
+* tts.synthesize
+* tts.cache_write
+* stream.send_audio
+
+The Android stream uses a new request ID for every interaction. The same ID follows audio, image, transcription, reasoning and speech so a request can be inspected from start to finish. `/v1/diag/summary` reports request success and latency alongside per-stage call counts, failures, averages, p50 and p95 timings.
 
 Observability exists solely for development and can be disabled without affecting the core assistant.
 

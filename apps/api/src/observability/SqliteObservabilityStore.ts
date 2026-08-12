@@ -23,6 +23,10 @@ export class SqliteObservabilityStore implements ObservabilityStore {
             error,
             stages_json
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(request_id) DO UPDATE SET
+            session_id = COALESCE(request_traces.session_id, excluded.session_id),
+            source = COALESCE(request_traces.source, excluded.source),
+            input_json = COALESCE(request_traces.input_json, excluded.input_json)
         `,
       )
       .run(
@@ -40,29 +44,19 @@ export class SqliteObservabilityStore implements ObservabilityStore {
   }
 
   async addStage(requestId: string, stage: TraceStage): Promise<void> {
-    const row = this.db
-      .prepare(
-        `
-          SELECT stages_json
-          FROM request_traces
-          WHERE request_id = ?
-        `,
-      )
-      .get(requestId);
-
-    const stages: TraceStage[] = row?.stages_json ? safeParse(row.stages_json, []) : [];
-
-    stages.push(stage);
-
     this.db
       .prepare(
         `
           UPDATE request_traces
-          SET stages_json = ?
+          SET stages_json = json_insert(
+            COALESCE(stages_json, '[]'),
+            '$[#]',
+            json(?)
+          )
           WHERE request_id = ?
         `,
       )
-      .run(safeJson(stages), requestId);
+      .run(safeJson(stage), requestId);
   }
 
   async finish(requestId: string, output: unknown): Promise<void> {
@@ -115,7 +109,7 @@ export class SqliteObservabilityStore implements ObservabilityStore {
       .run(endedAt, totalMs, error, requestId);
   }
 
-  getRecent(filters: TraceFilters = {}) {
+  getRecent(filters: TraceFilters = {}): RequestTraceRecord[] {
     const conditions: string[] = [];
     const values: unknown[] = [];
 
@@ -162,7 +156,55 @@ export class SqliteObservabilityStore implements ObservabilityStore {
     return rows.map(rowToTrace);
   }
 
-  getByRequestId(requestId: string) {
+  getSummary(filters: TraceFilters = {}) {
+    const traces = this.getRecent({ ...filters, limit: Math.min(filters.limit ?? 200, 200) });
+    const stageMap = new Map<string, { durations: number[]; failures: number }>();
+
+    for (const trace of traces) {
+      for (const stage of trace.stages) {
+        const current = stageMap.get(stage.name) ?? { durations: [], failures: 0 };
+        if (typeof stage.durationMs === 'number') current.durations.push(stage.durationMs);
+        if (!stage.ok) current.failures += 1;
+        stageMap.set(stage.name, current);
+      }
+    }
+
+    const stages = [...stageMap.entries()].map(([name, value]) => ({
+      name,
+      calls: value.durations.length,
+      failures: value.failures,
+      minMs: percentile(value.durations, 0),
+      avgMs: average(value.durations),
+      p50Ms: percentile(value.durations, 0.5),
+      p95Ms: percentile(value.durations, 0.95),
+      maxMs: percentile(value.durations, 1),
+    })).sort((a, b) => b.avgMs - a.avgMs);
+
+    const completed = traces.filter((trace) => trace.endedAt);
+    const failed = traces.filter((trace) => trace.error);
+    const totals = completed.flatMap((trace) =>
+      typeof trace.totalMs === 'number' ? [trace.totalMs] : [],
+    );
+
+    return {
+      traces: traces.length,
+      completed: completed.length,
+      inFlight: traces.length - completed.length,
+      failures: failed.length,
+      successRate: completed.length === 0
+        ? null
+        : Math.round(((completed.length - failed.length) / completed.length) * 1000) / 10,
+      totalMs: {
+        avg: average(totals),
+        p50: percentile(totals, 0.5),
+        p95: percentile(totals, 0.95),
+        max: percentile(totals, 1),
+      },
+      stages,
+    };
+  }
+
+  getByRequestId(requestId: string): RequestTraceRecord | null {
     const row = this.db
       .prepare(
         `
@@ -176,7 +218,7 @@ export class SqliteObservabilityStore implements ObservabilityStore {
     return row ? rowToTrace(row) : null;
   }
 
-  getBySessionId(sessionId: string, limit = 30) {
+  getBySessionId(sessionId: string, limit = 30): RequestTraceRecord[] {
     const rows = this.db
       .prepare(
         `
@@ -193,7 +235,7 @@ export class SqliteObservabilityStore implements ObservabilityStore {
   }
 }
 
-function rowToTrace(row: any) {
+function rowToTrace(row: any): RequestTraceRecord {
   return {
     requestId: row.request_id,
     sessionId: row.session_id ?? undefined,
@@ -220,4 +262,15 @@ function safeParse<T>(value: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function average(values: number[]) {
+  if (values.length === 0) return 0;
+  return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
+function percentile(values: number[], ratio: number) {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(Math.floor(sorted.length * ratio), sorted.length - 1)];
 }

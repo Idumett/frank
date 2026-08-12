@@ -10,6 +10,7 @@ import {
 } from '@frank/contracts';
 
 import type { FrankDeps, QualityReport } from './types.js';
+import type { TraceSource } from '../observability/types.js';
 import { CallBudget } from './guardrails/callBudget.js';
 import { applyConfidenceTone, enforceShortReply } from './guardrails/shortReply.js';
 
@@ -114,7 +115,11 @@ export class FrankOrchestrator {
    * The brain:
    * UserRequest + image -> AssistantReply
    */
-  async handleUserRequest(request: UserRequest, imageBytes?: Buffer): Promise<AssistantReply> {
+  async handleUserRequest(
+    request: UserRequest,
+    imageBytes?: Buffer,
+    options: { source?: TraceSource; finishTrace?: boolean } = {},
+  ): Promise<AssistantReply> {
     // console.log('we get to 1');
     const now = new Date().toISOString();
     const requestId = request.trace.requestId;
@@ -123,7 +128,7 @@ export class FrankOrchestrator {
     await this.deps.observability.start({
       requestId,
       sessionId: request.trace.sessionId,
-      source: 'analyze', // temporary default; routes can pass source later
+      source: options.source ?? 'analyze',
       startedAt: now,
       input: summarizeInput({
         request,
@@ -228,7 +233,9 @@ export class FrankOrchestrator {
           },
         };
         const parsed = AssistantReplySchema.parse(reply);
-        await this.deps.observability.finish(requestId, summarizeOutput(parsed));
+        if (options.finishTrace !== false) {
+          await this.deps.observability.finish(requestId, summarizeOutput(parsed));
+        }
         return parsed;
       }
 
@@ -248,7 +255,9 @@ export class FrankOrchestrator {
           },
         };
         const parsed = AssistantReplySchema.parse(reply);
-        await this.deps.observability.finish(requestId, summarizeOutput(parsed));
+        if (options.finishTrace !== false) {
+          await this.deps.observability.finish(requestId, summarizeOutput(parsed));
+        }
         return parsed;
       }
 
@@ -258,7 +267,9 @@ export class FrankOrchestrator {
           speak: 'Too many tries. Please try again in a moment.',
           suggestedAction: 'recapture',
         });
-        await this.deps.observability.finish(requestId, summarizeOutput(parsed));
+        if (options.finishTrace !== false) {
+          await this.deps.observability.finish(requestId, summarizeOutput(parsed));
+        }
         return parsed;
       }
       budget.recordLlmCall();
@@ -366,7 +377,9 @@ export class FrankOrchestrator {
         });
       }
 
-      await this.deps.observability.finish(requestId, summarizeOutput(reply));
+      if (options.finishTrace !== false) {
+        await this.deps.observability.finish(requestId, summarizeOutput(reply));
+      }
       return reply;
     } catch (err: any) {
       await this.deps.observability.fail(requestId, err?.message ?? 'Unknown orchestrator error');
