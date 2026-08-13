@@ -24,9 +24,30 @@ export class SqliteObservabilityStore implements ObservabilityStore {
             stages_json
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(request_id) DO UPDATE SET
-            session_id = COALESCE(request_traces.session_id, excluded.session_id),
-            source = COALESCE(request_traces.source, excluded.source),
-            input_json = COALESCE(request_traces.input_json, excluded.input_json)
+            session_id = CASE
+              WHEN request_traces.ended_at IS NULL THEN COALESCE(request_traces.session_id, excluded.session_id)
+              ELSE excluded.session_id
+            END,
+            source = CASE
+              WHEN request_traces.ended_at IS NULL THEN COALESCE(request_traces.source, excluded.source)
+              ELSE excluded.source
+            END,
+            started_at = CASE
+              WHEN request_traces.ended_at IS NULL THEN request_traces.started_at
+              ELSE excluded.started_at
+            END,
+            ended_at = CASE WHEN request_traces.ended_at IS NULL THEN request_traces.ended_at ELSE NULL END,
+            total_ms = CASE WHEN request_traces.ended_at IS NULL THEN request_traces.total_ms ELSE NULL END,
+            input_json = CASE
+              WHEN request_traces.ended_at IS NULL THEN COALESCE(request_traces.input_json, excluded.input_json)
+              ELSE excluded.input_json
+            END,
+            output_json = CASE WHEN request_traces.ended_at IS NULL THEN request_traces.output_json ELSE NULL END,
+            error = CASE WHEN request_traces.ended_at IS NULL THEN request_traces.error ELSE NULL END,
+            stages_json = CASE
+              WHEN request_traces.ended_at IS NULL THEN request_traces.stages_json
+              ELSE excluded.stages_json
+            END
         `,
       )
       .run(

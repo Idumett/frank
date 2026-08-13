@@ -201,7 +201,7 @@ app.post('/v1/memory/add', async (req) => {
   const body = BodySchema.parse(req.body);
 
   // store in SQLite
-  memoryStore.add(body.item);
+  await memoryStore.add(body.item);
 
   req.log.info({ requestId: req.id, memoryId: body.item.id }, 'memory_add');
   return { trace: body.trace, ok: true };

@@ -25,7 +25,7 @@ const ClientMsgSchema = z.discriminatedUnion('type', [
     type: z.literal('audio'),
     trace: TraceSchema.optional(),
     mime: z.enum(['audio/wav', 'audio/webm', 'audio/mpeg']),
-    audioBase64: z.string().min(20),
+    audioBase64: z.string().min(20).max(12_000_000),
     sentAt: z.string().optional(),
   }),
   z.object({
@@ -38,7 +38,7 @@ const ClientMsgSchema = z.discriminatedUnion('type', [
     trace: TraceSchema.optional(),
     seq: z.number().int().min(0),
     mime: z.enum(['image/jpeg', 'image/png', 'image/webp']),
-    bytesBase64: z.string().min(20),
+    bytesBase64: z.string().min(20).max(11_000_000),
     capturedAt: z.string().optional(),
   }),
   z.object({ type: z.literal('stop') }),
@@ -78,6 +78,7 @@ export async function deviceStreamRoutes(
     let lastReplyText: string | null = null;
     let lastAudioBytesBase64: string | null = null;
     let inFlight = false;
+    let activeOperation = 0;
     let abort = new AbortController();
 
     safeSend(socket, { type: 'connected', trace: { requestId: req.id } });
@@ -111,6 +112,9 @@ export async function deviceStreamRoutes(
       }
 
       if (m.type === 'frame') {
+        if (!connectionTrace) {
+          return safeSend(socket, { type: 'error', message: 'Send hello first', code: 'NO_HELLO' });
+        }
         lastFrameBytes = Buffer.from(m.bytesBase64, 'base64');
         lastFrameSeq = m.seq;
         lastFrameCapturedAt = m.capturedAt;
@@ -124,8 +128,17 @@ export async function deviceStreamRoutes(
       }
 
       if (m.type === 'audio') {
+        if (!connectionTrace) {
+          return safeSend(socket, { type: 'error', message: 'Send hello first', code: 'NO_HELLO' });
+        }
         const requestTrace = resolveTrace(m.trace);
+        if (inFlight) {
+          return safeSend(socket, { type: 'error', trace: requestTrace, message: 'Frank is still processing', code: 'BUSY' });
+        }
+
+        inFlight = true;
         activeTrace = requestTrace;
+        const operationId = ++activeOperation;
         const audioBytes = Buffer.from(m.audioBase64, 'base64');
 
         await observability.start({
@@ -143,6 +156,10 @@ export async function deviceStreamRoutes(
             { audioBytes: audioBytes.length, mime: m.mime },
           );
 
+          if (!sttResult.transcript.trim()) {
+            throw new Error('No speech recognized');
+          }
+
           safeSend(socket, {
             type: 'transcript',
             trace: requestTrace,
@@ -150,10 +167,12 @@ export async function deviceStreamRoutes(
             confidence: sttResult.confidence,
           });
 
-          await maybeProcess(sttResult.transcript, requestTrace, true, m.sentAt);
+          await maybeProcess(sttResult.transcript, requestTrace, true, m.sentAt, operationId);
         } catch (error: any) {
           await observability.fail(requestTrace.requestId, error?.message ?? 'STT failed');
           safeSend(socket, { type: 'error', trace: requestTrace, message: error?.message ?? 'STT failed', code: 'STT_FAIL' });
+        } finally {
+          if (activeOperation === operationId) inFlight = false;
         }
         return;
       }
@@ -167,6 +186,7 @@ export async function deviceStreamRoutes(
       if (m.type === 'stop') {
         abort.abort();
         abort = new AbortController();
+        activeOperation += 1;
         inFlight = false;
         if (activeTrace) await observability.fail(activeTrace.requestId, 'Stopped by client');
         safeSend(socket, { type: 'stopped', trace: activeTrace });
@@ -175,6 +195,7 @@ export async function deviceStreamRoutes(
 
     socket.on('close', async () => {
       abort.abort();
+      activeOperation += 1;
       if (inFlight && activeTrace) {
         await observability.fail(activeTrace.requestId, 'Client disconnected');
       }
@@ -228,12 +249,16 @@ export async function deviceStreamRoutes(
       requestTrace: DeviceTrace,
       traceStarted: boolean,
       clientSentAt?: string,
+      reservedOperation?: number,
     ) {
       if (!connectionTrace) {
         return safeSend(socket, { type: 'error', message: 'Send hello first', code: 'NO_HELLO' });
       }
-      if (inFlight) return safeSend(socket, { type: 'error', trace: requestTrace, message: 'Frank is still processing', code: 'BUSY' });
+      if (inFlight && reservedOperation === undefined) {
+        return safeSend(socket, { type: 'error', trace: requestTrace, message: 'Frank is still processing', code: 'BUSY' });
+      }
 
+      const operationId = reservedOperation ?? ++activeOperation;
       inFlight = true;
       activeTrace = requestTrace;
       const startedAt = Date.now();
@@ -304,7 +329,7 @@ export async function deviceStreamRoutes(
           safeSend(socket, { type: 'error', trace: requestTrace, message: error?.message ?? 'Unknown error', code: 'PROCESS_FAIL' });
         }
       } finally {
-        inFlight = false;
+        if (activeOperation === operationId) inFlight = false;
       }
     }
   });
