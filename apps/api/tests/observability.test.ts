@@ -58,6 +58,21 @@ describe('request diagnostics', () => {
     db.close();
   });
 
+  it('starts clean when a completed request ID is reused', async () => {
+    const { db, store } = makeStore();
+    const first = { requestId: 'req-reused1', source: 'stt' as const, startedAt: '2026-08-13T10:00:00.000Z', stages: [] };
+    await store.start(first);
+    await store.addStage(first.requestId, { name: 'stt.transcribe', startedAt: first.startedAt, durationMs: 10, ok: false, error: 'failed' });
+    await store.fail(first.requestId, 'failed');
+
+    await store.start({ ...first, source: 'tts', startedAt: '2026-08-13T10:01:00.000Z' });
+    const trace = store.getByRequestId(first.requestId);
+    expect(trace).toMatchObject({ source: 'tts', startedAt: '2026-08-13T10:01:00.000Z', stages: [] });
+    expect(trace?.endedAt).toBeUndefined();
+    expect(trace?.error).toBeUndefined();
+    db.close();
+  });
+
   it('counts failed stages and failed requests', async () => {
     const { db, store } = makeStore();
     await store.start({ requestId: 'req-failed1', source: 'tts', startedAt: new Date().toISOString(), stages: [] });

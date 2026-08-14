@@ -10,7 +10,8 @@
     "typecheck": "pnpm -r typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
-    "frank:console": "tsx tests/cli/frank-console.ts"
+    "frank:console": "tsx tests/cli/frank-console.ts",
+    "test:v1": "vitest run tests/v1 apps/api/tests"
   },
   "devDependencies": {
     "@types/node": "^25.0.3",
