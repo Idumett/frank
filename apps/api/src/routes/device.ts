@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import multipart from '@fastify/multipart';
 import { z } from 'zod';
 import { UserRequestSchema } from '@frank/contracts';
-import type { ObservabilityStore } from '@frank/core';
+import { withDeadline, type ObservabilityStore } from '@frank/core';
 import { TtsProvider, SttProvider } from '@frank/providers';
 import { FrankOrchestrator, pickDeviceSpeak, resolveTtsPrefs } from '@frank/core';
 import { observedStage } from '../observability/stage.js';
@@ -74,14 +74,14 @@ export async function deviceRoutes(
           deps.observability,
           payload.trace.requestId,
           'tts.synthesize',
-          () => tts.speak({
+          () => withDeadline(() => tts.speak({
             trace: payload.trace,
             text: speakText,
             languageCode: resolved.languageCode,
             voiceName: resolved.voiceName,
             speakingRate: resolved.speakingRate,
             pitch: resolved.pitch,
-          }),
+          }), 15_000, 'tts.synthesize'),
           { textCharacters: speakText.length },
         );
         audioBytes = audio.audioBytes;

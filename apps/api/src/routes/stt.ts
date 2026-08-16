@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { UserRequestSchema } from '@frank/contracts';
-import type { ObservabilityStore } from '@frank/core';
+import { withDeadline, type ObservabilityStore } from '@frank/core';
 import { SttProvider } from '@frank/providers';
 import { observedStage } from '../observability/stage.js';
 
@@ -32,7 +32,7 @@ export async function sttRoutes(
         observability,
         body.trace.requestId,
         'stt.transcribe',
-        () => stt.transcribe({ trace: body.trace, audioBytes }),
+        () => withDeadline(() => stt.transcribe({ trace: body.trace, audioBytes }), 15_000, 'stt.transcribe'),
         { audioBytes: audioBytes.length },
       );
       const output = { transcript: result.transcript, confidence: result.confidence };

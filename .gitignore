@@ -5,3 +5,4 @@ dist
 *.db
 tests/fixtures
 apps/api/data
+.v1-test-results.json

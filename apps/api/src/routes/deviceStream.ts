@@ -5,7 +5,7 @@ import { z } from 'zod';
 
 import { TtsProvider, SttProvider } from '@frank/providers';
 import { UserRequestSchema } from '@frank/contracts';
-import { FrankOrchestrator, pickDeviceSpeak, type ObservabilityStore } from '@frank/core';
+import { FrankOrchestrator, pickDeviceSpeak, withDeadline, type ObservabilityStore } from '@frank/core';
 
 const TraceSchema = UserRequestSchema.shape.trace;
 
@@ -47,6 +47,7 @@ const ClientMsgSchema = z.discriminatedUnion('type', [
 ]);
 
 type DeviceTrace = { requestId: string; sessionId?: string };
+type PendingFrame = { bytes: Buffer; seq: number; capturedAt?: string; trace?: DeviceTrace; receivedAt: number };
 
 function safeSend(socket: any, msg: unknown) {
   try {
@@ -72,9 +73,7 @@ export async function deviceStreamRoutes(
     let lastIntent: 'read_text' | 'describe_scene' | 'remember_this' | 'recall' | 'help' =
       'describe_scene';
     let lastQuery: string | undefined;
-    let lastFrameBytes: Buffer | null = null;
-    let lastFrameSeq: number | null = null;
-    let lastFrameCapturedAt: string | undefined;
+    let pendingFrame: PendingFrame | null = null;
     let lastReplyText: string | null = null;
     let lastAudioBytesBase64: string | null = null;
     let inFlight = false;
@@ -115,10 +114,13 @@ export async function deviceStreamRoutes(
         if (!connectionTrace) {
           return safeSend(socket, { type: 'error', message: 'Send hello first', code: 'NO_HELLO' });
         }
-        lastFrameBytes = Buffer.from(m.bytesBase64, 'base64');
-        lastFrameSeq = m.seq;
-        lastFrameCapturedAt = m.capturedAt;
-        safeSend(socket, { type: 'ack', seq: m.seq, trace: m.trace });
+        pendingFrame = {
+          bytes: Buffer.from(m.bytesBase64, 'base64'),
+          seq: m.seq,
+          capturedAt: m.capturedAt,
+          trace: m.trace,
+          receivedAt: Date.now(),
+        };
         return;
       }
 
@@ -139,6 +141,7 @@ export async function deviceStreamRoutes(
         inFlight = true;
         activeTrace = requestTrace;
         const operationId = ++activeOperation;
+        const frame = takeFrame(requestTrace);
         const audioBytes = Buffer.from(m.audioBase64, 'base64');
 
         await observability.start({
@@ -146,13 +149,17 @@ export async function deviceStreamRoutes(
           sessionId: requestTrace.sessionId,
           source: 'device_stream',
           startedAt: new Date().toISOString(),
-          input: streamInput(audioBytes.length, m.mime, m.sentAt),
+          input: streamInput(frame, audioBytes.length, m.mime, m.sentAt),
           stages: [],
         });
 
         try {
           const sttResult = await stage(requestTrace, 'stt.transcribe', () =>
-            stt.transcribe({ trace: requestTrace, audioBytes, mimeType: m.mime }),
+            withDeadline(
+              () => stt.transcribe({ trace: requestTrace, audioBytes, mimeType: m.mime }),
+              15_000,
+              'stt.transcribe',
+            ),
             { audioBytes: audioBytes.length, mime: m.mime },
           );
 
@@ -167,7 +174,7 @@ export async function deviceStreamRoutes(
             confidence: sttResult.confidence,
           });
 
-          await maybeProcess(sttResult.transcript, requestTrace, true, m.sentAt, operationId);
+          await maybeProcess(sttResult.transcript, requestTrace, true, m.sentAt, operationId, frame);
         } catch (error: any) {
           await observability.fail(requestTrace.requestId, error?.message ?? 'STT failed');
           safeSend(socket, { type: 'error', trace: requestTrace, message: error?.message ?? 'STT failed', code: 'STT_FAIL' });
@@ -208,15 +215,23 @@ export async function deviceStreamRoutes(
       };
     }
 
-    function streamInput(audioBytes?: number, audioMime?: string, clientSentAt?: string) {
+    function takeFrame(requestTrace: DeviceTrace): PendingFrame | null {
+      const frame = pendingFrame;
+      pendingFrame = null;
+      if (!frame || Date.now() - frame.receivedAt > 5_000) return null;
+      if (frame.trace && frame.trace.requestId !== requestTrace.requestId) return null;
+      return frame;
+    }
+
+    function streamInput(frame: PendingFrame | null, audioBytes?: number, audioMime?: string, clientSentAt?: string) {
       return {
         intent: lastIntent,
         query: lastQuery,
         audioBytes,
         audioMime,
-        imageBytes: lastFrameBytes?.length ?? 0,
-        frameSeq: lastFrameSeq,
-        frameCapturedAt: lastFrameCapturedAt,
+        imageBytes: frame?.bytes.length ?? 0,
+        frameSeq: frame?.seq,
+        frameCapturedAt: frame?.capturedAt,
         clientSentAt,
       };
     }
@@ -250,6 +265,7 @@ export async function deviceStreamRoutes(
       traceStarted: boolean,
       clientSentAt?: string,
       reservedOperation?: number,
+      reservedFrame?: PendingFrame | null,
     ) {
       if (!connectionTrace) {
         return safeSend(socket, { type: 'error', message: 'Send hello first', code: 'NO_HELLO' });
@@ -259,6 +275,7 @@ export async function deviceStreamRoutes(
       }
 
       const operationId = reservedOperation ?? ++activeOperation;
+      const frame = reservedFrame === undefined ? takeFrame(requestTrace) : reservedFrame;
       inFlight = true;
       activeTrace = requestTrace;
       const startedAt = Date.now();
@@ -270,7 +287,7 @@ export async function deviceStreamRoutes(
           sessionId: requestTrace.sessionId,
           source: 'device_stream',
           startedAt: new Date().toISOString(),
-          input: { ...streamInput(undefined, undefined, clientSentAt), utterance },
+          input: { ...streamInput(frame, undefined, undefined, clientSentAt), utterance },
           stages: [],
         });
       }
@@ -281,33 +298,36 @@ export async function deviceStreamRoutes(
           intent: lastIntent,
           modality: 'button',
           utterance,
-          hasImage: !!lastFrameBytes,
+          hasImage: Boolean(frame),
           query: lastIntent === 'recall' ? lastQuery : undefined,
           requestedAt: new Date().toISOString(),
         });
 
         const assistantReply = await frank.handleUserRequest(
           request,
-          lastFrameBytes ?? undefined,
+          frame?.bytes,
           { source: 'device_stream', finishTrace: false },
         );
         if (localAbort.signal.aborted) return;
 
         lastReplyText = assistantReply.speak;
+        if (frame) {
+          safeSend(socket, { type: 'ack', seq: frame.seq, trace: requestTrace, processed: true });
+        }
         safeSend(socket, {
           type: 'meta', trace: requestTrace, reply: assistantReply,
-          timings: { totalMs: Date.now() - startedAt, frameSeq: lastFrameSeq }, costUnits: 3,
+          timings: { totalMs: Date.now() - startedAt, frameSeq: frame?.seq }, costUnits: 3,
         });
 
         const speakText = pickDeviceSpeak(assistantReply);
-        const audio = await stage(requestTrace, 'tts.synthesize', () => tts.speak({
+        const audio = await stage(requestTrace, 'tts.synthesize', () => withDeadline(() => tts.speak({
           trace: requestTrace,
           text: speakText,
           voiceName: 'en-GB-Chirp3-HD-Sadachbia',
           languageCode: 'en-GB',
           speakingRate: 1.0,
           pitch: 0,
-        }), { textCharacters: speakText.length });
+        }), 15_000, 'tts.synthesize'), { textCharacters: speakText.length });
         if (localAbort.signal.aborted) return;
 
         const b64 = audio.audioBytes.toString('base64');
@@ -321,7 +341,7 @@ export async function deviceStreamRoutes(
           speak: assistantReply.speak,
           suggestedAction: assistantReply.suggestedAction,
           audioBytes: audio.audioBytes.length,
-          frameSeq: lastFrameSeq,
+          frameSeq: frame?.seq,
         });
       } catch (error: any) {
         if (!localAbort.signal.aborted) {

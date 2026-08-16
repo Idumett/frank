@@ -12,11 +12,11 @@ type SearchOptions = {
 export class SqliteMemoryStore {
   private db: Database.Database;
 
-  constructor() {
-    const dir = path.dirname(DB_PATH);
+  constructor(dbPath = DB_PATH) {
+    const dir = path.dirname(dbPath);
     fs.mkdirSync(dir, { recursive: true });
 
-    this.db = new Database(DB_PATH);
+    this.db = new Database(dbPath);
 
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
@@ -150,7 +150,7 @@ export class SqliteMemoryStore {
         const res = stmt.run(id);
         deleted += res.changes;
       }
-      return Promise.resolve(deleted);
+      return deleted;
     });
 
     return Promise.resolve(tx(ids));

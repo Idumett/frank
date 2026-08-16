@@ -13,7 +13,7 @@ export type ClientMsg =
 export type ServerMsg =
   | { type: 'connected'; trace: DeviceTrace }
   | { type: 'ready'; trace: DeviceTrace }
-  | { type: 'ack'; seq: number; trace?: DeviceTrace }
+  | { type: 'ack'; seq: number; trace?: DeviceTrace; processed?: boolean }
   | { type: 'transcript'; trace: DeviceTrace; transcript: string; confidence?: number }
   | {
       type: 'meta';

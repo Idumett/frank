@@ -13,6 +13,7 @@ import type { FrankDeps, QualityReport } from './types.js';
 import type { TraceSource } from '../observability/types.js';
 import { CallBudget } from './guardrails/callBudget.js';
 import { applyConfidenceTone, enforceShortReply } from './guardrails/shortReply.js';
+import { withDeadline } from '../utils/deadline.js';
 
 function summarizeInput(args: { request: UserRequest; hasImage: boolean }) {
   return {
@@ -164,7 +165,11 @@ export class FrankOrchestrator {
         ) => {
           if (!spendVision()) return null;
 
-          return stage(name, () => fn.call(this.deps.vision, callArgs), {
+          return stage(name, () => withDeadline(
+            () => fn.call(this.deps.vision, callArgs),
+            10_000,
+            name,
+          ), {
             imageBytes: imageBytes.length,
           });
         };
@@ -287,14 +292,14 @@ export class FrankOrchestrator {
       const llmReply = await stage(
         'llm.generate_reply',
         () =>
-          this.deps.llm.generateReply({
+          withDeadline(() => this.deps.llm.generateReply({
             trace: request.trace,
             userUtterance: request.utterance,
             perception,
             memoryHits: compactMemoryHits,
             conversationContext,
             now,
-          }),
+          }), 25_000, 'llm.generate_reply'),
         {
           memoryHits: compactMemoryHits.length,
           hasConversationContext: Boolean(conversationContext),

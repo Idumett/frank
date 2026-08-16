@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { UserRequestSchema } from '@frank/contracts';
-import type { ObservabilityStore } from '@frank/core';
+import { withDeadline, type ObservabilityStore } from '@frank/core';
 import { TtsProvider } from '@frank/providers';
 import { observedStage } from '../observability/stage.js';
 import { ensureTtsCacheDir, readCachedTts, ttsCacheKey, writeCachedTts } from '../ttsCache.js';
@@ -48,7 +48,11 @@ export async function ttsRoutes(
           observability,
           body.trace.requestId,
           'tts.synthesize',
-          () => tts.speak({ trace: body.trace, text: body.text, languageCode: body.languageCode, voiceName: body.voiceName }),
+          () => withDeadline(
+            () => tts.speak({ trace: body.trace, text: body.text, languageCode: body.languageCode, voiceName: body.voiceName }),
+            15_000,
+            'tts.synthesize',
+          ),
           { textCharacters: body.text.length },
         );
         audioBytes = audio.audioBytes;

@@ -22,7 +22,7 @@ function request(intent: UserRequest['intent'], utterance?: string): UserRequest
   };
 }
 
-function makeFrank(overrides: { quality?: 'good' | 'poor'; failLlm?: boolean } = {}) {
+function makeFrank(overrides: { quality?: 'good' | 'poor'; failLlm?: boolean; failVision?: boolean; memoryHits?: MemoryItem[]; conversation?: any[] } = {}) {
   const traces = new TraceRecorder();
   const stored: MemoryItem[] = [];
   const llm = vi.fn(async (args: any): Promise<AssistantReply> => {
@@ -46,7 +46,10 @@ function makeFrank(overrides: { quality?: 'good' | 'poor'; failLlm?: boolean } =
   });
   const frank = new FrankOrchestrator({
     vision: {
-      analyzeOCR: async ({ trace }: any) => perception(trace, overrides.quality === 'poor' ? undefined : 'MILK'),
+      analyzeOCR: async ({ trace }: any) => {
+        if (overrides.failVision) throw new Error('Vision unavailable');
+        return perception(trace, overrides.quality === 'poor' ? undefined : 'MILK');
+      },
       analyzeLabels: async ({ trace }: any) => overrides.quality === 'poor'
         ? { ...perception(trace), labels: [] }
         : perception(trace),
@@ -54,11 +57,11 @@ function makeFrank(overrides: { quality?: 'good' | 'poor'; failLlm?: boolean } =
     llm: { generateReply: llm },
     memory: {
       add: async (item: MemoryItem) => { stored.push(item); },
-      search: async () => [],
+      search: async () => overrides.memoryHits ?? [],
       recent: async () => [],
       delete: async () => 0,
     },
-    conversation: { getRecent: async () => [], addTurn: async () => {} },
+    conversation: { getRecent: async () => overrides.conversation ?? [], addTurn: async () => {} },
     observability: traces,
     policy: new BasicPolicyEngine(),
     quality: {
@@ -75,6 +78,32 @@ describe('V1 orchestrator', () => {
     expect(reply.speak).toContain('milk');
     expect(llm).toHaveBeenCalledOnce();
     expect(traces.records.get('request-describe_scene')?.stages.map((stage) => stage.name)).toEqual(expect.arrayContaining(['quality.assess', 'vision.ocr', 'vision.labels', 'llm.generate_reply']));
+  });
+
+  it('answers a time question without requiring camera evidence', async () => {
+    const { frank, llm } = makeFrank();
+    await frank.handleUserRequest({ ...request('help', 'What time is it?'), hasImage: false }, undefined);
+    expect(llm.mock.calls[0][0].perception.labels).toEqual([]);
+  });
+
+  it('passes recent turns into a follow-up request', async () => {
+    const conversation = [{ sessionId: 'v1-test', role: 'assistant', text: 'The door is ahead.', createdAt: '2026-08-13T10:00:00.000Z' }];
+    const { frank, llm } = makeFrank({ conversation });
+    await frank.handleUserRequest({ ...request('help', 'How far?'), hasImage: false }, undefined);
+    expect(llm.mock.calls[0][0].conversationContext).toContain('The door is ahead.');
+  });
+
+  it('uses remembered information for recall', async () => {
+    const memory: MemoryItem = { id: 'remembered-1', type: 'text', title: 'Keys', content: 'Keys are by the door', tags: [], createdAt: '2026-08-13T10:00:00.000Z' };
+    const { frank, llm } = makeFrank({ memoryHits: [memory] });
+    await frank.handleUserRequest({ ...request('recall'), query: 'keys', hasImage: false }, undefined);
+    expect(llm.mock.calls[0][0].memoryHits).toEqual(['Keys: Keys are by the door']);
+  });
+
+  it('records a Vision provider failure', async () => {
+    const { frank, traces } = makeFrank({ failVision: true });
+    await expect(frank.handleUserRequest(request('describe_scene', 'What is here?'), Buffer.alloc(20_000))).rejects.toThrow('Vision unavailable');
+    expect(traces.records.get('request-describe_scene')?.error).toBe('Vision unavailable');
   });
 
   it('asks for another image without calling the LLM when evidence is unusable', async () => {
