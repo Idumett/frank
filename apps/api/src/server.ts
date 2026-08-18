@@ -27,54 +27,67 @@ import { NoopObservabilityStore } from '@frank/core';
 import { SqliteObservabilityStore } from './observability/SqliteObservabilityStore.js';
 import { observedStage } from './observability/stage.js';
 import { SqliteConversationStore } from './conversation/SqliteConversationStore.js';
+import { TokenRegistry } from './security/auth.js';
+import { RateLimiter } from './security/rateLimiter.js';
+import { SessionOwnershipError, SessionOwnershipStore } from './security/sessionOwnership.js';
+import { applyRetention } from './security/retention.js';
+import { TTS_CACHE_DIR } from './ttsCache.js';
 
 migrate();
 const sqlite = new SqliteMemoryStore();
 const memoryStore = {
-  add: async (item: MemoryItem) => sqlite.add(item),
-  search: async (query: string, limit: number) => sqlite.search(query, { limit }),
-  recent: (limit: number) => sqlite.recent(limit),
-  delete: (ids: string[]) => sqlite.delete(ids),
+  add: async (userId: string, item: MemoryItem) => sqlite.add(userId, item),
+  search: async (userId: string, query: string, limit: number) => sqlite.search(userId, query, { limit }),
+  recent: (userId: string, limit: number) => sqlite.recent(userId, limit),
+  delete: (userId: string, ids: string[]) => sqlite.delete(userId, ids),
 };
 const prefs = new UserPrefsStore(sqlite.rawDb);
 const conversationStore = new SqliteConversationStore(sqlite.rawDb);
+const sessions = new SessionOwnershipStore(sqlite.rawDb);
 const observabilityStore =
   process.env.OBSERVABILITY_ENABLED === 'true'
     ? new SqliteObservabilityStore(sqlite.rawDb)
     : new NoopObservabilityStore();
 const frank = makeFrank(memoryStore, conversationStore, observabilityStore);
 const app = Fastify({
-  logger: { level: process.env.LOG_LEVEL ?? 'info' },
-  bodyLimit: 20 * 1024 * 1024,
-  genReqId: (req) => {
-    const incoming = req.headers['x-request-id'];
-    if (typeof incoming === 'string' && incoming.length >= 8) return incoming;
-    return crypto.randomUUID();
-  },
+  logger: { level: process.env.LOG_LEVEL ?? 'info', redact: { paths: ['req.headers.authorization', 'req.body', 'res.headers.set-cookie'], censor: '[redacted]' } },
+  bodyLimit: 12 * 1024 * 1024,
+  genReqId: () => crypto.randomUUID(),
 });
 const stt = new GoogleSttProvider();
 const tts = new GoogleTtsProvider();
 
 await app.register(sensible);
 
-const demoAccessToken = process.env.DEMO_ACCESS_TOKEN?.trim();
-if (process.env.NODE_ENV === 'production' && !demoAccessToken) {
-  throw new Error('DEMO_ACCESS_TOKEN is required in production');
-}
+const authFile = process.env.FRANK_AUTH_FILE;
+if (process.env.NODE_ENV === 'production' && !authFile) throw new Error('FRANK_AUTH_FILE is required in production');
+const tokens = authFile ? new TokenRegistry(authFile) : null;
+const authFailures = new RateLimiter(20, 60_000);
+const productRequests = new RateLimiter(Number(process.env.PRODUCT_RATE_LIMIT ?? 90), 60_000);
+const streamRequests = new RateLimiter(Number(process.env.STREAM_RATE_LIMIT ?? 20), 60_000);
 
 app.addHook('onRequest', async (req, reply) => {
-  if (!demoAccessToken || req.url === '/health') return;
-
-  const authorization = req.headers.authorization;
-  const expected = `Bearer ${demoAccessToken}`;
-  const authorized =
-    typeof authorization === 'string' &&
-    authorization.length === expected.length &&
-    crypto.timingSafeEqual(Buffer.from(authorization), Buffer.from(expected));
-
-  if (!authorized) {
+  req.userId = 'legacy';
+  if (!tokens || req.url === '/health') return;
+  const diagnostics = req.url.startsWith('/v1/diag');
+  const auth = tokens.authenticate(req.headers.authorization, diagnostics);
+  if (!auth) {
+    const attempt = authFailures.take(req.ip);
+    if (!attempt.allowed) return reply.header('retry-after', attempt.retryAfterSeconds).code(429).send({ error: 'Too many attempts' });
     return reply.code(401).send({ error: 'Unauthorized' });
   }
+  if (auth.kind === 'user') {
+    req.userId = auth.userId;
+    const rate = productRequests.take(`${auth.userId}:${req.routeOptions.url ?? req.url.split('?')[0]}`);
+    if (!rate.allowed) return reply.header('retry-after', rate.retryAfterSeconds).code(429).send({ error: 'Too many requests' });
+  }
+});
+
+app.setErrorHandler((error: any, req, reply) => {
+  if (error instanceof SessionOwnershipError) return reply.code(403).send({ error: 'Session unavailable', requestId: req.id });
+  const status = error.statusCode && error.statusCode >= 400 && error.statusCode < 500 ? error.statusCode : 500;
+  req.log.error({ requestId: req.id, status, errorType: error.name }, 'request_failed');
+  return reply.code(status).send({ error: status === 500 ? 'Request failed' : 'Invalid request', requestId: req.id });
 });
 
 async function normalizeImage(imageBytes: Buffer) {
@@ -86,10 +99,12 @@ async function normalizeImage(imageBytes: Buffer) {
 }
 
 process.on('SIGINT', () => {
+  clearInterval(retentionTimer);
   sqlite.close();
   process.exit(0);
 });
 process.on('SIGTERM', () => {
+  clearInterval(retentionTimer);
   sqlite.close();
   process.exit(0);
 });
@@ -100,17 +115,24 @@ app.addHook('onSend', async (req, reply) => {
 
 app.get('/health', async () => ({ ok: true }));
 
+const claim = (userId: string, sessionId?: string) => sessions.claim(userId, sessionId);
+applyRetention(sqlite.rawDb, TTS_CACHE_DIR);
+const retentionTimer = setInterval(() => applyRetention(sqlite.rawDb, TTS_CACHE_DIR), 24 * 60 * 60 * 1000);
+retentionTimer.unref();
+
 app.post('/v1/analyze', async (req) => {
   const { z } = await import('zod');
   const BodySchema = UserRequestSchema.extend({
-    imageBase64: z.string().min(10),
+    imageBase64: z.string().min(10).max(11_000_000),
     wantAudio: z.boolean().default(false),
   });
 
   const body = BodySchema.parse(req.body);
+  claim(req.userId, body.trace.sessionId);
   const sourceBytes = Buffer.from(body.imageBase64, 'base64');
   await observabilityStore.start({
     requestId: body.trace.requestId,
+    userId: req.userId,
     sessionId: body.trace.sessionId,
     source: 'analyze',
     startedAt: new Date().toISOString(),
@@ -174,7 +196,7 @@ app.post('/v1/analyze', async (req) => {
     'analyze_start',
   );
 
-  const reply = await frank.handleUserRequest(body, imageBytes);
+  const reply = await frank.handleUserRequest(body, imageBytes, { userId: req.userId });
   req.log.info(
     {
       requestId: req.id,
@@ -199,9 +221,10 @@ app.post('/v1/memory/add', async (req) => {
   });
 
   const body = BodySchema.parse(req.body);
+  claim(req.userId, body.trace.sessionId);
 
   // store in SQLite
-  await memoryStore.add(body.item);
+  await memoryStore.add(req.userId, body.item);
 
   req.log.info({ requestId: req.id, memoryId: body.item.id }, 'memory_add');
   return { trace: body.trace, ok: true };
@@ -211,11 +234,12 @@ app.post('/v1/memory/search', async (req) => {
   const { z } = await import('zod');
   const BodySchema = z.object({
     trace: UserRequestSchema.shape.trace.optional(),
-    query: z.string().min(1),
+    query: z.string().min(1).max(1000),
     limit: z.number().min(1).max(50).default(10),
   });
   const body = BodySchema.parse(req.body);
-  const items = await memoryStore.search(body.query, body.limit);
+  claim(req.userId, body.trace?.sessionId);
+  const items = await memoryStore.search(req.userId, body.query, body.limit);
   return { trace: body.trace ?? { requestId: req.id }, count: items.length, items };
 });
 
@@ -227,29 +251,30 @@ app.post('/v1/memory/delete', async (req) => {
   });
 
   const body = BodySchema.parse(req.body);
-  const deleted = await memoryStore.delete(body.ids);
+  claim(req.userId, body.trace?.sessionId);
+  const deleted = await memoryStore.delete(req.userId, body.ids);
   return { trace: body.trace ?? { requestId: req.id }, deleted };
 });
 
 app.get('/v1/memory/recent', async (req) => {
   const limit = Number((req.query as any)?.limit ?? 10);
-  const items = await memoryStore.recent(limit);
+  const items = await memoryStore.recent(req.userId, Math.min(Math.max(limit, 1), 50));
   return { count: items.length, items };
 });
 
 // Visit docs/voice-summary.md for explanation
-await sttRoutes(app, stt, observabilityStore);
-await ttsRoutes(app, tts, observabilityStore);
+await sttRoutes(app, stt, observabilityStore, claim);
+await ttsRoutes(app, tts, observabilityStore, claim);
 
 await ttsVoicesRoutes(app);
-await prefsTtsRoutes(app, { prefs });
+await prefsTtsRoutes(app, { prefs, claim });
 
 if (observabilityStore instanceof SqliteObservabilityStore) {
   await diagRoutes(app, { observability: observabilityStore });
 }
 
-await deviceRoutes(app, frank, stt, tts, { prefs, observability: observabilityStore });
-await deviceStreamRoutes(app, frank, stt, tts, observabilityStore);
+await deviceRoutes(app, frank, stt, tts, { prefs, observability: observabilityStore, claim });
+await deviceStreamRoutes(app, frank, stt, tts, observabilityStore, claim, (userId) => streamRequests.take(userId));
 
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '0.0.0.0';

@@ -16,7 +16,8 @@ docker build -t "frank-demo:$revision" -f "$repo/deploy/Dockerfile" "$repo"
 docker network inspect frank-demo >/dev/null 2>&1 || docker network create frank-demo >/dev/null
 docker rm -f frank-candidate >/dev/null 2>&1 || true
 docker run -d --name frank-candidate --restart=no --network frank-demo \
-  --env-file /etc/frank/runtime.env -v /var/lib/frank:/data "frank-demo:$revision" >/dev/null
+  --env-file /etc/frank/runtime.env -v /var/lib/frank:/data \
+  -v /etc/frank/secrets:/run/secrets:ro "frank-demo:$revision" >/dev/null
 healthy=false
 for _ in $(seq 1 30); do
   if docker exec frank-candidate node -e "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)})" >/dev/null 2>&1; then

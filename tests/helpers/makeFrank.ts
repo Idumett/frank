@@ -5,8 +5,8 @@ import { GcvVisionProvider, GeminiLlmProvider } from '@frank/providers';
 
 export function makeFrankForTests() {
   const memory = {
-    add: async (_item: MemoryItem) => {},
-    search: async (_query: string, _limit: number) => [],
+    add: async (_userId: string, _item: MemoryItem) => {},
+    search: async (_userId: string, _query: string, _limit: number) => [],
   };
 
   return new FrankOrchestrator({

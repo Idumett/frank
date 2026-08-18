@@ -1,6 +1,6 @@
 # Demo deployment
 
-Frank runs on one Compute Engine VM behind Caddy at `35.242.143.73.sslip.io`. SQLite and the TTS cache live in `/var/lib/frank`. Gemini and demo-access secrets come from Secret Manager through the VM's service account.
+Frank runs on one Compute Engine VM behind Caddy at `35.242.143.73.sslip.io`. SQLite and the TTS cache live in `/var/lib/frank`. Gemini and the hashed product/diagnostics token registry come from Secret Manager through the VM's service account.
 
 ## Update and rollback
 
@@ -9,6 +9,7 @@ The VM deployment follows the `v1` branch using a read-only GitHub deploy key. A
 ```sh
 sudo frank-update
 sudo frank-rollback
+sudo frank-refresh-secrets
 ```
 
 ## Backups and health
@@ -28,7 +29,7 @@ Supply the URL and token as Gradle properties. Never commit the token.
 ```sh
 ./gradlew assembleDebug \
   -PfrankServerUrl=https://35.242.143.73.sslip.io/ \
-  -PfrankDemoToken=TOKEN
+  -PfrankAccessToken=TOKEN
 ```
 
 For local Android Studio use, an ignored `local.properties` can provide the same values when the local checkout's Gradle configuration reads them.

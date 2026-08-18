@@ -12,10 +12,10 @@ import { SqliteMemoryStore } from './db/sqliteMemoryStore.js';
 
 const sqlite = new SqliteMemoryStore();
 const defaultMemoryStore = {
-  add: async (item: MemoryItem) => sqlite.add(item),
-  search: async (query: string, limit: number) => sqlite.search(query, { limit }),
-  recent: (limit: number) => sqlite.recent(limit),
-  delete: (ids: string[]) => sqlite.delete(ids),
+  add: async (userId: string, item: MemoryItem) => sqlite.add(userId, item),
+  search: async (userId: string, query: string, limit: number) => sqlite.search(userId, query, { limit }),
+  recent: (userId: string, limit: number) => sqlite.recent(userId, limit),
+  delete: (userId: string, ids: string[]) => sqlite.delete(userId, ids),
 };
 
 export function makeFrank(

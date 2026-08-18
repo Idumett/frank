@@ -119,15 +119,17 @@ export class FrankOrchestrator {
   async handleUserRequest(
     request: UserRequest,
     imageBytes?: Buffer,
-    options: { source?: TraceSource; finishTrace?: boolean } = {},
+    options: { source?: TraceSource; finishTrace?: boolean; userId?: string } = {},
   ): Promise<AssistantReply> {
     // console.log('we get to 1');
     const now = new Date().toISOString();
     const requestId = request.trace.requestId;
+    const userId = options.userId ?? 'legacy';
     const stage = createStageTimer(this.deps.observability, requestId);
 
     await this.deps.observability.start({
       requestId,
+      userId,
       sessionId: request.trace.sessionId,
       source: options.source ?? 'analyze',
       startedAt: now,
@@ -196,13 +198,13 @@ export class FrankOrchestrator {
 
       if (userText) {
         // If user asked anything, search memory using that text
-        memoryHits = await stage('memory.search', () => this.deps.memory.search(userText, 5), {
+        memoryHits = await stage('memory.search', () => this.deps.memory.search(userId, userText, 5), {
           query: userText,
           limit: 5,
         });
       } else if (request.intent === 'recall') {
         // recall with no query: just return recent-ish hits (optional)
-        memoryHits = await stage('memory.search', () => this.deps.memory.search('', 0), {
+        memoryHits = await stage('memory.search', () => this.deps.memory.search(userId, '', 0), {
           query: '',
           limit: 0,
         }); // or implement recent() and use that
@@ -283,7 +285,7 @@ export class FrankOrchestrator {
       const conversationTurns = request.trace.sessionId
         ? await stage(
             'conversation.get_recent',
-            () => this.deps.conversation.getRecent(request.trace.sessionId!, 6),
+            () => this.deps.conversation.getRecent(userId, request.trace.sessionId!, 6),
             { sessionId: request.trace.sessionId, limit: 6 },
           )
         : [];
@@ -334,6 +336,7 @@ export class FrankOrchestrator {
             'conversation.add_user_turn',
             () =>
               this.deps.conversation.addTurn({
+                userId,
                 sessionId: request.trace.sessionId!,
                 role: 'user',
                 text: request.utterance!.trim(),
@@ -347,6 +350,7 @@ export class FrankOrchestrator {
           'conversation.add_assistant_turn',
           () =>
             this.deps.conversation.addTurn({
+              userId,
               sessionId: request.trace.sessionId!,
               role: 'assistant',
               text: reply.speak,
@@ -375,7 +379,7 @@ export class FrankOrchestrator {
         };
 
         MemoryItemSchema.parse(item);
-        await stage('memory.store', () => this.deps.memory.add(item), {
+        await stage('memory.store', () => this.deps.memory.add(userId, item), {
           title: item.title,
           type: item.type,
           tags: item.tags,

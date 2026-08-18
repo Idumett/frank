@@ -56,7 +56,7 @@ function makeFrank(overrides: { quality?: 'good' | 'poor'; failLlm?: boolean; fa
     },
     llm: { generateReply: llm },
     memory: {
-      add: async (item: MemoryItem) => { stored.push(item); },
+      add: async (_userId: string, item: MemoryItem) => { stored.push(item); },
       search: async () => overrides.memoryHits ?? [],
       recent: async () => [],
       delete: async () => 0,

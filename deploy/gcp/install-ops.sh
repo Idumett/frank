@@ -4,6 +4,7 @@ repo=${1:-/opt/frank/repo}
 install -d -m 700 /etc/frank /var/lib/frank /var/backups/frank
 install -m 600 "$repo/deploy/gcp/frank-demo.env" /etc/frank/deployment.env
 install -m 700 "$repo/deploy/gcp/read-secrets.sh" /etc/frank/read-secrets.sh
+ln -sfn /etc/frank/read-secrets.sh /usr/local/sbin/frank-refresh-secrets
 install -m 700 "$repo/deploy/gcp/update.sh" /usr/local/sbin/frank-update
 install -m 700 "$repo/deploy/gcp/rollback.sh" /usr/local/sbin/frank-rollback
 install -m 700 "$repo/deploy/gcp/backup.sh" /usr/local/sbin/frank-backup

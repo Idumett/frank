@@ -16,6 +16,7 @@ export type TraceSource =
   | 'tts';
 
 export type RequestTraceRecord = {
+  userId?: string;
   requestId: string;
   sessionId?: string;
   source?: TraceSource;

@@ -9,7 +9,7 @@ import { ensureTtsCacheDir, readCachedTts, ttsCacheKey, writeCachedTts } from '.
 export async function ttsRoutes(
   app: FastifyInstance,
   tts: TtsProvider,
-  observability: ObservabilityStore,
+  observability: ObservabilityStore, claim: (userId: string, sessionId?: string) => void,
 ) {
   ensureTtsCacheDir();
 
@@ -22,10 +22,12 @@ export async function ttsRoutes(
       raw: z.boolean().default(false),
     });
     const body = BodySchema.parse(req.body);
+    claim(req.userId, body.trace.sessionId);
     const key = ttsCacheKey({ text: body.text, voice: body.voiceName, languageCode: body.languageCode });
 
     await observability.start({
       requestId: body.trace.requestId,
+      userId: req.userId,
       sessionId: body.trace.sessionId,
       source: 'tts',
       startedAt: new Date().toISOString(),

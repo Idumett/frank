@@ -8,18 +8,20 @@ import { observedStage } from '../observability/stage.js';
 export async function sttRoutes(
   app: FastifyInstance,
   stt: SttProvider,
-  observability: ObservabilityStore,
+  observability: ObservabilityStore, claim: (userId: string, sessionId?: string) => void,
 ) {
   app.post('/v1/stt', async (req) => {
     const BodySchema = z.object({
       trace: UserRequestSchema.shape.trace,
-      audioBase64: z.string().min(20),
+      audioBase64: z.string().min(20).max(11_000_000),
     });
     const body = BodySchema.parse(req.body);
+    claim(req.userId, body.trace.sessionId);
     const audioBytes = Buffer.from(body.audioBase64, 'base64');
 
     await observability.start({
       requestId: body.trace.requestId,
+      userId: req.userId,
       sessionId: body.trace.sessionId,
       source: 'stt',
       startedAt: new Date().toISOString(),

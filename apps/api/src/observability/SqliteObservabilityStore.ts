@@ -8,11 +8,14 @@ export class SqliteObservabilityStore implements ObservabilityStore {
   constructor(private db: DbLike) {}
 
   async start(record: RequestTraceRecord): Promise<void> {
+    const owner = this.db.prepare('SELECT user_id FROM request_traces WHERE request_id = ?').get(record.requestId);
+    if (owner && owner.user_id !== (record.userId ?? 'legacy')) throw new Error('Request ID already belongs to another user');
     this.db
       .prepare(
         `
           INSERT OR REPLACE INTO request_traces (
             request_id,
+            user_id,
             session_id,
             source,
             started_at,
@@ -22,8 +25,9 @@ export class SqliteObservabilityStore implements ObservabilityStore {
             output_json,
             error,
             stages_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(request_id) DO UPDATE SET
+            user_id = excluded.user_id,
             session_id = CASE
               WHEN request_traces.ended_at IS NULL THEN COALESCE(request_traces.session_id, excluded.session_id)
               ELSE excluded.session_id
@@ -52,6 +56,7 @@ export class SqliteObservabilityStore implements ObservabilityStore {
       )
       .run(
         record.requestId,
+        record.userId ?? 'legacy',
         record.sessionId ?? null,
         record.source ?? null,
         record.startedAt,
@@ -259,6 +264,7 @@ export class SqliteObservabilityStore implements ObservabilityStore {
 function rowToTrace(row: any): RequestTraceRecord {
   return {
     requestId: row.request_id,
+    userId: row.user_id,
     sessionId: row.session_id ?? undefined,
     source: row.source ?? undefined,
     startedAt: row.started_at,

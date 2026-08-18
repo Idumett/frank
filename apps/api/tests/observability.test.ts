@@ -7,6 +7,7 @@ function makeStore() {
   db.exec(`
     CREATE TABLE request_traces (
       request_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
       session_id TEXT,
       source TEXT,
       started_at TEXT NOT NULL,

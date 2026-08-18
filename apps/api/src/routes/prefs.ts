@@ -4,7 +4,7 @@ import { TraceSchema } from '@frank/contracts';
 import { listVoicesGoogleTts } from '@frank/providers';
 import type { UserPrefsStore } from '../prefs/UserPrefsStore.js';
 
-export async function prefsTtsRoutes(app: FastifyInstance, deps: { prefs: UserPrefsStore }) {
+export async function prefsTtsRoutes(app: FastifyInstance, deps: { prefs: UserPrefsStore; claim: (userId: string, sessionId?: string) => void }) {
   const BodySchema = z.object({
     trace: TraceSchema,
     tts: z.object({
@@ -22,6 +22,7 @@ export async function prefsTtsRoutes(app: FastifyInstance, deps: { prefs: UserPr
     if (!sessionId) {
       return reply.code(400).send({ error: 'trace.sessionId is required' });
     }
+    deps.claim(req.userId, sessionId);
 
     // Optional but recommended: validate the voiceName exists
     if (body.tts.voiceName) {
@@ -35,7 +36,7 @@ export async function prefsTtsRoutes(app: FastifyInstance, deps: { prefs: UserPr
       }
     }
 
-    const saved = deps.prefs.set(sessionId, body.tts);
+    const saved = deps.prefs.set(req.userId, sessionId, body.tts);
     return reply.send({ ok: true, prefs: saved });
   });
 }

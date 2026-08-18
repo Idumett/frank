@@ -14,7 +14,7 @@ export async function deviceRoutes(
   frank: FrankOrchestrator,
   _stt: SttProvider,
   tts: TtsProvider,
-  deps: { prefs: UserPrefsStore; observability: ObservabilityStore },
+  deps: { prefs: UserPrefsStore; observability: ObservabilityStore; claim: (userId: string, sessionId?: string) => void },
 ) {
   await app.register(multipart, { limits: { fileSize: 8 * 1024 * 1024, files: 1 } });
 
@@ -36,9 +36,11 @@ export async function deviceRoutes(
       clientCapturedAt: z.string().optional(),
     });
     const payload = PayloadSchema.parse(JSON.parse(payloadRaw));
+    deps.claim(req.userId, payload.trace.sessionId);
 
     await deps.observability.start({
       requestId: payload.trace.requestId,
+      userId: req.userId,
       sessionId: payload.trace.sessionId,
       source: 'device_frame',
       startedAt: new Date().toISOString(),
@@ -56,11 +58,12 @@ export async function deviceRoutes(
       const assistantReply = await frank.handleUserRequest(payload, imageBytes, {
         source: 'device_frame',
         finishTrace: false,
+        userId: req.userId,
       });
       let audioBytes: Buffer | null = null;
 
       if (payload.wantAudio) {
-        const prefsAdapter = new UserPrefsStoreAdapter(deps.prefs);
+        const prefsAdapter = new UserPrefsStoreAdapter(deps.prefs, req.userId);
         const resolved = await resolveTtsPrefs({
           trace: payload.trace,
           prefs: prefsAdapter,

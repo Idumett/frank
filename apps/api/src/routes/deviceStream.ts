@@ -64,8 +64,10 @@ export async function deviceStreamRoutes(
   stt: SttProvider,
   tts: TtsProvider,
   observability: ObservabilityStore,
+  claim: (userId: string, sessionId?: string) => void = () => {},
+  takeRequest: (userId: string) => { allowed: boolean; retryAfterSeconds: number } = () => ({ allowed: true, retryAfterSeconds: 0 }),
 ) {
-  await app.register(websocket);
+  await app.register(websocket, { options: { maxPayload: 12 * 1024 * 1024 } });
 
   app.get('/v1/device/stream', { websocket: true }, (socket, req) => {
     let connectionTrace: DeviceTrace | null = null;
@@ -99,6 +101,8 @@ export async function deviceStreamRoutes(
       if (m.type === 'ping') return safeSend(socket, { type: 'pong', t: m.t });
 
       if (m.type === 'hello') {
+        try { claim(req.userId, m.trace.sessionId); }
+        catch { safeSend(socket, { type: 'error', message: 'Session unavailable', code: 'SESSION_FORBIDDEN' }); socket.close(1008); return; }
         connectionTrace = m.trace;
         safeSend(socket, { type: 'ready', trace: connectionTrace });
         return;
@@ -125,11 +129,13 @@ export async function deviceStreamRoutes(
       }
 
       if (m.type === 'utterance') {
+        if (!takeRequest(req.userId).allowed) return safeSend(socket, { type: 'error', message: 'Too many requests', code: 'RATE_LIMITED' });
         await maybeProcess(m.text, resolveTrace(m.trace), false, m.sentAt);
         return;
       }
 
       if (m.type === 'audio') {
+        if (!takeRequest(req.userId).allowed) return safeSend(socket, { type: 'error', message: 'Too many requests', code: 'RATE_LIMITED' });
         if (!connectionTrace) {
           return safeSend(socket, { type: 'error', message: 'Send hello first', code: 'NO_HELLO' });
         }
@@ -146,6 +152,7 @@ export async function deviceStreamRoutes(
 
         await observability.start({
           requestId: requestTrace.requestId,
+          userId: req.userId,
           sessionId: requestTrace.sessionId,
           source: 'device_stream',
           startedAt: new Date().toISOString(),
@@ -209,8 +216,8 @@ export async function deviceStreamRoutes(
     });
 
     function resolveTrace(messageTrace?: DeviceTrace): DeviceTrace {
-      return messageTrace ?? {
-        requestId: crypto.randomUUID(),
+      return {
+        requestId: messageTrace?.requestId ?? crypto.randomUUID(),
         sessionId: connectionTrace?.sessionId,
       };
     }
@@ -306,7 +313,7 @@ export async function deviceStreamRoutes(
         const assistantReply = await frank.handleUserRequest(
           request,
           frame?.bytes,
-          { source: 'device_stream', finishTrace: false },
+          { source: 'device_stream', finishTrace: false, userId: req.userId },
         );
         if (localAbort.signal.aborted) return;
 
