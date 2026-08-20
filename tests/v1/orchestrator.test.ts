@@ -25,7 +25,7 @@ function request(intent: UserRequest['intent'], utterance?: string): UserRequest
 function makeFrank(overrides: { quality?: 'good' | 'poor'; failLlm?: boolean; failVision?: boolean; memoryHits?: MemoryItem[]; conversation?: any[] } = {}) {
   const traces = new TraceRecorder();
   const stored: MemoryItem[] = [];
-  const llm = vi.fn(async (args: any): Promise<AssistantReply> => {
+  const llm = vi.fn(async (args: any): Promise<AssistantReply & { providerMetadata: { usage: Record<string, unknown> } }> => {
     if (overrides.failLlm) throw new Error('LLM unavailable');
     return {
       trace: args.trace,
@@ -33,6 +33,7 @@ function makeFrank(overrides: { quality?: 'good' | 'poor'; failLlm?: boolean; fa
       createdAt: args.now,
       suggestedAction: 'none',
       groundedIn: { usedOcr: true, usedLabels: true, usedMemoryHits: 0 },
+      providerMetadata: { usage: { promptTokens: 200, outputTokens: 20, cacheHit: false, latencyMs: 900 } },
     };
   });
   const perception = (trace: any, ocr?: string): PerceptionResult => ({
@@ -78,6 +79,7 @@ describe('V1 orchestrator', () => {
     expect(reply.speak).toContain('milk');
     expect(llm).toHaveBeenCalledOnce();
     expect(traces.records.get('request-describe_scene')?.stages.map((stage) => stage.name)).toEqual(expect.arrayContaining(['quality.assess', 'vision.ocr', 'vision.labels', 'llm.generate_reply']));
+    expect(traces.records.get('request-describe_scene')?.stages.find((stage) => stage.name === 'llm.usage')?.data).toMatchObject({ promptTokens: 200, outputTokens: 20, cacheHit: false });
   });
 
   it('answers a time question without requiring camera evidence', async () => {

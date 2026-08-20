@@ -55,7 +55,7 @@ export interface FrankDeps {
       memoryHits: string[];
       conversationContext: string;
       now: string;
-    }): Promise<AssistantReply>;
+    }): Promise<AssistantReply & { providerMetadata?: { usage?: Record<string, unknown> } }>;
   };
   memory: MemoryStore;
   conversation: ConversationStore;

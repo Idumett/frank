@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import {
   AssistantReplySchema,
   type AssistantReply,
@@ -6,6 +6,17 @@ import {
   type Trace,
 } from '@frank/contracts';
 import type { LlmProvider } from './LlmProvider.js';
+import { buildFrankPrompt, FRANK_SYSTEM_INSTRUCTION } from './frankPrompt.js';
+
+export type GeminiUsage = {
+  promptTokens?: number;
+  outputTokens?: number;
+  thoughtTokens?: number;
+  totalTokens?: number;
+  cachedTokens?: number;
+  cacheHit: boolean;
+  latencyMs: number;
+};
 
 export class GeminiLlmProvider implements LlmProvider {
   private ai: GoogleGenAI;
@@ -30,50 +41,17 @@ export class GeminiLlmProvider implements LlmProvider {
   }): Promise<AssistantReply> {
     const ocrText = args.perception.ocr?.fullText?.trim() ?? '';
     const labels = (args.perception.labels ?? []).map((l) => l.name).slice(0, 8);
-    const weakVision = !(ocrText && ocrText.length > 5) && labels.length === 0;
-
-    const hasImage = Boolean(ocrText || labels.length);
-    const hasMemory = args.memoryHits.length > 0;
-    const hasConversation = Boolean(args.conversationContext?.trim());
-
-    const prompt = [
-      `You are Frank, a personal visual reasoning assistant for blind users.`,
-      `CURRENT_TIME: ${new Date().toLocaleString('en-GB', { dateStyle: 'full', timeStyle: 'short' })}`,
-
-      `SOURCES: 1. Conversation Context | 2. Current Image (OCR/Labels) | 3. Memory Hits | 4. Search.`,
-
-      `STRATEGY:`,
-      `- Aim for a "One-Shot Answer." Provide the most likely answer immediately.`,
-      `- If a user asks a vague question (e.g., "the game"), check Context or Memory for a sports team.`,
-      `- If a logical match is found, answer for that team immediately. Do not ask for clarification first.`,
-      `- Only ask clarifying questions if there are zero clues in Context or Memory.`,
-
-      `IMAGE RULES:`,
-      `- CURRENT_IMAGE is ${hasImage ? 'PRESENT' : 'NONE'}.`,
-      `- If PRESENT: Prioritize OCR/Labels. If NONE: Use Search/Knowledge.`,
-      `- Never mention "capturing an image" unless the user specifically asks you to "look" at something.`,
-
-      `CONSTRAINTS:`,
-      `- Be concise but informative. Do not "rant," but prioritize the answer over word counts.`,
-      `- Maximum 3-4 sentences. Keep them punchy and easy to follow via text-to-speech.`,
-      `- Use natural, helpful language. Avoid robotic phrases like "Image evidence suggests."`,
-
-      `CURRENT_STATE:`,
-      `- IMAGE_PRESENT: ${hasImage ? 'YES' : 'NO'}`,
-      `- CONVERSATION_ACTIVE: ${hasConversation ? 'YES' : 'NO'}`,
-      `- MEMORY_FOUND: ${hasMemory ? 'YES' : 'NO'}`,
-
-      `USER DATA:`,
-      `USER QUESTION: ${args.userUtterance ?? '(none)'}`,
-      `CONVERSATION CONTEXT: ${args.conversationContext ?? '(none)'}`,
-      `OCR TEXT: ${ocrText || '(none)'}`,
-      `LABELS: ${labels.length ? labels.join(', ') : '(none)'}`,
-      `MEMORY HITS: ${hasMemory ? args.memoryHits.join(' | ') : '(none)'}`,
-    ].join('\n');
-
+    const prompt = buildFrankPrompt(args);
+    const startedAt = Date.now();
     const response = await this.ai.models.generateContent({
       model: this.model,
       contents: prompt,
+      config: {
+        systemInstruction: FRANK_SYSTEM_INSTRUCTION,
+        maxOutputTokens: positiveInt(process.env.GEMINI_MAX_OUTPUT_TOKENS, 180),
+        temperature: boundedNumber(process.env.GEMINI_TEMPERATURE, 0.2, 0, 2),
+        thinkingConfig: { thinkingLevel: thinkingLevel(process.env.GEMINI_THINKING_LEVEL) },
+      },
     });
 
     const text = (response.text ?? '').trim() || 'I am not sure. Please try capturing again.';
@@ -90,6 +68,34 @@ export class GeminiLlmProvider implements LlmProvider {
       },
     };
 
-    return AssistantReplySchema.parse(reply);
+    const parsed = AssistantReplySchema.parse(reply) as AssistantReply & { providerMetadata?: { usage: GeminiUsage } };
+    const usage = response.usageMetadata;
+    parsed.providerMetadata = { usage: {
+      promptTokens: usage?.promptTokenCount,
+      outputTokens: usage?.candidatesTokenCount,
+      thoughtTokens: usage?.thoughtsTokenCount,
+      totalTokens: usage?.totalTokenCount,
+      cachedTokens: usage?.cachedContentTokenCount,
+      cacheHit: (usage?.cachedContentTokenCount ?? 0) > 0,
+      latencyMs: Date.now() - startedAt,
+    } };
+    return parsed;
   }
+}
+
+function positiveInt(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function boundedNumber(value: string | undefined, fallback: number, min: number, max: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
+}
+
+function thinkingLevel(value: string | undefined) {
+  const levels: Record<string, ThinkingLevel> = {
+    minimal: ThinkingLevel.MINIMAL, low: ThinkingLevel.LOW, medium: ThinkingLevel.MEDIUM, high: ThinkingLevel.HIGH,
+  };
+  return levels[value?.toLowerCase() ?? 'minimal'] ?? ThinkingLevel.MINIMAL;
 }

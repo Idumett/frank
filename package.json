@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "frank:console": "tsx tests/cli/frank-console.ts",
     "test:v1": "vitest run tests/v1 apps/api/tests",
-    "test:v1:report": "vitest run tests/v1 apps/api/tests --reporter=json --outputFile=.v1-test-results.json"
+    "test:v1:report": "vitest run tests/v1 apps/api/tests --reporter=json --outputFile=.v1-test-results.json",
+    "benchmark:gemini": "tsx scripts/benchmark-gemini.ts"
   },
   "devDependencies": {
     "@types/node": "^25.0.3",

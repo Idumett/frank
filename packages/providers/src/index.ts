@@ -10,3 +10,4 @@ export * from './stt/googleSttProvider.js';
 
 export * from './llm/LlmProvider.js';
 export * from './llm/geminiLlmProvider.js';
+export * from './llm/frankPrompt.js';
