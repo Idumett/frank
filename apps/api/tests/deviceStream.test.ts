@@ -6,10 +6,24 @@ import type { ObservabilityStore, RequestTraceRecord, TraceStage } from '@frank/
 
 class TraceRecorder implements ObservabilityStore {
   records = new Map<string, RequestTraceRecord>();
-  async start(record: RequestTraceRecord) { this.records.set(record.requestId, record); }
-  async addStage(requestId: string, stage: TraceStage) { this.records.get(requestId)?.stages.push(stage); }
-  async finish(requestId: string, output: unknown) { const record = this.records.get(requestId)!; record.endedAt = new Date().toISOString(); record.output = output; }
-  async fail(requestId: string, error: string) { const record = this.records.get(requestId); if (record) { record.endedAt = new Date().toISOString(); record.error = error; } }
+  async start(record: RequestTraceRecord) {
+    this.records.set(record.requestId, record);
+  }
+  async addStage(requestId: string, stage: TraceStage) {
+    this.records.get(requestId)?.stages.push(stage);
+  }
+  async finish(requestId: string, output: unknown) {
+    const record = this.records.get(requestId)!;
+    record.endedAt = new Date().toISOString();
+    record.output = output;
+  }
+  async fail(requestId: string, error: string) {
+    const record = this.records.get(requestId);
+    if (record) {
+      record.endedAt = new Date().toISOString();
+      record.error = error;
+    }
+  }
 }
 
 class MessageQueue {
@@ -33,7 +47,9 @@ class MessageQueue {
 }
 
 const apps: ReturnType<typeof Fastify>[] = [];
-afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
+afterEach(async () => {
+  await Promise.all(apps.splice(0).map((app) => app.close()));
+});
 
 describe('V1 device stream', () => {
   it('requires hello and refuses a second request while one is running', async () => {
@@ -41,27 +57,71 @@ describe('V1 device stream', () => {
     apps.push(app);
     const traces = new TraceRecorder();
     let releaseStt!: () => void;
-    const sttWait = new Promise<void>((resolve) => { releaseStt = resolve; });
+    const sttWait = new Promise<void>((resolve) => {
+      releaseStt = resolve;
+    });
     const frank = {
-      handleUserRequest: async (request: any) => ({ trace: request.trace, speak: 'Hello.', createdAt: new Date().toISOString(), suggestedAction: 'none', groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 } }),
+      handleUserRequest: async (request: any) => ({
+        trace: request.trace,
+        speak: 'Hello.',
+        createdAt: new Date().toISOString(),
+        suggestedAction: 'none',
+        groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 },
+      }),
     };
-    const stt = { transcribe: async () => { await sttWait; return { transcript: 'Hello Frank' }; } };
-    const tts = { speak: async () => ({ audioBytes: Buffer.from('audio'), mimeType: 'audio/mpeg' }) };
+    const stt = {
+      transcribe: async () => {
+        await sttWait;
+        return { transcript: 'Hello Frank' };
+      },
+    };
+    const tts = {
+      speak: async () => ({ audioBytes: Buffer.from('audio'), mimeType: 'audio/mpeg' }),
+    };
     await deviceStreamRoutes(app, frank as any, stt as any, tts as any, traces);
     await app.ready();
     const socket = await app.injectWS('/v1/device/stream');
     const messages = new MessageQueue(socket);
 
-    socket.send(JSON.stringify({ type: 'frame', seq: 1, mime: 'image/jpeg', bytesBase64: 'a'.repeat(20) }));
+    socket.send(
+      JSON.stringify({
+        type: 'frame',
+        trace: { requestId: 'before-hello', sessionId: 'session-1' },
+        frameId: 'frame-before-hello',
+        seq: 1,
+        mime: 'image/jpeg',
+        bytesBase64: 'a'.repeat(20),
+        capturedAt: new Date().toISOString(),
+        ageMs: 0,
+      }),
+    );
     expect(await messages.next()).toMatchObject({ type: 'error', code: 'NO_HELLO' });
 
     const connection = { requestId: 'connection-123', sessionId: 'session-1' };
     socket.send(JSON.stringify({ type: 'hello', trace: connection }));
     expect((await messages.next()).type).toBe('ready');
 
-    socket.send(JSON.stringify({ type: 'audio', trace: { requestId: 'request-111', sessionId: 'session-1' }, mime: 'audio/wav', audioBase64: 'a'.repeat(20) }));
-    socket.send(JSON.stringify({ type: 'audio', trace: { requestId: 'request-222', sessionId: 'session-1' }, mime: 'audio/wav', audioBase64: 'a'.repeat(20) }));
-    expect(await messages.next()).toMatchObject({ type: 'error', code: 'BUSY', trace: { requestId: 'request-222' } });
+    socket.send(
+      JSON.stringify({
+        type: 'audio',
+        trace: { requestId: 'request-111', sessionId: 'session-1' },
+        mime: 'audio/wav',
+        audioBase64: 'a'.repeat(20),
+      }),
+    );
+    socket.send(
+      JSON.stringify({
+        type: 'audio',
+        trace: { requestId: 'request-222', sessionId: 'session-1' },
+        mime: 'audio/wav',
+        audioBase64: 'a'.repeat(20),
+      }),
+    );
+    expect(await messages.next()).toMatchObject({
+      type: 'error',
+      code: 'BUSY',
+      trace: { requestId: 'request-222' },
+    });
     expect(traces.records.has('request-222')).toBe(false);
 
     releaseStt();
@@ -77,7 +137,11 @@ describe('V1 device stream', () => {
     const traces = new TraceRecorder();
     await deviceStreamRoutes(
       app,
-      { handleUserRequest: async () => { throw new Error('should not run'); } } as any,
+      {
+        handleUserRequest: async () => {
+          throw new Error('should not run');
+        },
+      } as any,
       { transcribe: async () => ({ transcript: '' }) } as any,
       { speak: async () => ({ audioBytes: Buffer.from('audio'), mimeType: 'audio/mpeg' }) } as any,
       traces,
@@ -85,11 +149,137 @@ describe('V1 device stream', () => {
     await app.ready();
     const socket = await app.injectWS('/v1/device/stream');
     const messages = new MessageQueue(socket);
-    socket.send(JSON.stringify({ type: 'hello', trace: { requestId: 'connection-silence', sessionId: 'session-1' } }));
+    socket.send(
+      JSON.stringify({
+        type: 'hello',
+        trace: { requestId: 'connection-silence', sessionId: 'session-1' },
+      }),
+    );
     expect((await messages.next()).type).toBe('ready');
-    socket.send(JSON.stringify({ type: 'audio', trace: { requestId: 'request-silence', sessionId: 'session-1' }, mime: 'audio/wav', audioBase64: 'a'.repeat(20) }));
-    expect(await messages.next()).toMatchObject({ type: 'error', code: 'STT_FAIL', message: 'No speech recognized' });
+    socket.send(
+      JSON.stringify({
+        type: 'audio',
+        trace: { requestId: 'request-silence', sessionId: 'session-1' },
+        mime: 'audio/wav',
+        audioBase64: 'a'.repeat(20),
+      }),
+    );
+    expect(await messages.next()).toMatchObject({
+      type: 'error',
+      code: 'STT_FAIL',
+      message: 'No speech recognized',
+    });
     expect(traces.records.get('request-silence')?.error).toBe('No speech recognized');
+    socket.terminate();
+  });
+
+  it('requests fresh evidence only after a visual intent is understood', async () => {
+    const app = Fastify();
+    apps.push(app);
+    const traces = new TraceRecorder();
+    const images: number[] = [];
+    await deviceStreamRoutes(
+      app,
+      {
+        handleUserRequest: async (request: any, image?: Buffer) => {
+          images.push(image?.length ?? 0);
+          return {
+            trace: request.trace,
+            speak: 'A door is visible.',
+            createdAt: new Date().toISOString(),
+            suggestedAction: 'none',
+            groundedIn: { usedOcr: false, usedLabels: true, usedMemoryHits: 0 },
+            imageEvidence: { quality: 'good', notes: [] },
+          };
+        },
+      } as any,
+      { transcribe: async () => ({ transcript: 'What is in front of me?' }) } as any,
+      { speak: async () => ({ audioBytes: Buffer.from('audio'), mimeType: 'audio/mpeg' }) } as any,
+      traces,
+    );
+    await app.ready();
+    const socket = await app.injectWS('/v1/device/stream');
+    const messages = new MessageQueue(socket);
+    const session = { requestId: 'connection-visual', sessionId: 'session-visual' };
+    const turn = { requestId: 'request-visual', sessionId: 'session-visual' };
+    socket.send(JSON.stringify({ type: 'hello', trace: session }));
+    await messages.next();
+    socket.send(
+      JSON.stringify({
+        type: 'audio',
+        trace: turn,
+        mime: 'audio/wav',
+        audioBase64: 'a'.repeat(20),
+      }),
+    );
+    expect((await messages.next()).type).toBe('transcript');
+    expect(await messages.next()).toMatchObject({
+      type: 'frame_required',
+      trace: turn,
+      reason: 'describe_scene',
+    });
+    socket.send(
+      JSON.stringify({
+        type: 'frame',
+        trace: turn,
+        frameId: 'fresh-frame-visual',
+        seq: 9,
+        mime: 'image/jpeg',
+        bytesBase64: 'a'.repeat(20),
+        capturedAt: new Date().toISOString(),
+        ageMs: 0,
+      }),
+    );
+    expect(await messages.next()).toMatchObject({ type: 'ack', seq: 9 });
+    expect(await messages.next()).toMatchObject({
+      type: 'meta',
+      evidence: { frameId: 'fresh-frame-visual', quality: 'good' },
+    });
+    expect((await messages.next()).type).toBe('audio');
+    expect(images).toEqual([15]);
+    socket.terminate();
+  });
+
+  it('refuses stale camera evidence', async () => {
+    const app = Fastify();
+    apps.push(app);
+    const traces = new TraceRecorder();
+    await deviceStreamRoutes(
+      app,
+      {} as any,
+      { transcribe: async () => ({ transcript: 'Describe what is in front of me' }) } as any,
+      {} as any,
+      traces,
+    );
+    await app.ready();
+    const socket = await app.injectWS('/v1/device/stream');
+    const messages = new MessageQueue(socket);
+    const trace = { requestId: 'request-stale', sessionId: 'session-stale' };
+    socket.send(
+      JSON.stringify({
+        type: 'hello',
+        trace: { requestId: 'connection-stale', sessionId: 'session-stale' },
+      }),
+    );
+    await messages.next();
+    socket.send(
+      JSON.stringify({ type: 'audio', trace, mime: 'audio/wav', audioBase64: 'a'.repeat(20) }),
+    );
+    await messages.next();
+    await messages.next();
+    socket.send(
+      JSON.stringify({
+        type: 'frame',
+        trace,
+        frameId: 'stale-frame-1',
+        seq: 1,
+        mime: 'image/jpeg',
+        bytesBase64: 'a'.repeat(20),
+        capturedAt: new Date(Date.now() - 10_000).toISOString(),
+        ageMs: 10_000,
+      }),
+    );
+    expect(await messages.next()).toMatchObject({ type: 'error', code: 'STALE_FRAME' });
     socket.terminate();
   });
 
@@ -98,30 +288,64 @@ describe('V1 device stream', () => {
     apps.push(app);
     const traces = new TraceRecorder();
     let failTts = false;
-    const reply = { speak: 'Previous response.', createdAt: new Date().toISOString(), suggestedAction: 'none', groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 } };
+    const reply = {
+      speak: 'Previous response.',
+      createdAt: new Date().toISOString(),
+      suggestedAction: 'none',
+      groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 },
+    };
     await deviceStreamRoutes(
       app,
       { handleUserRequest: async (request: any) => ({ ...reply, trace: request.trace }) } as any,
       { transcribe: async () => ({ transcript: 'Hello' }) } as any,
-      { speak: async () => { if (failTts) throw new Error('TTS unavailable'); return { audioBytes: Buffer.from('audio'), mimeType: 'audio/mpeg' }; } } as any,
+      {
+        speak: async () => {
+          if (failTts) throw new Error('TTS unavailable');
+          return { audioBytes: Buffer.from('audio'), mimeType: 'audio/mpeg' };
+        },
+      } as any,
       traces,
     );
     await app.ready();
     const socket = await app.injectWS('/v1/device/stream');
     const messages = new MessageQueue(socket);
-    socket.send(JSON.stringify({ type: 'hello', trace: { requestId: 'connection-repeat', sessionId: 'session-1' } }));
+    socket.send(
+      JSON.stringify({
+        type: 'hello',
+        trace: { requestId: 'connection-repeat', sessionId: 'session-1' },
+      }),
+    );
     await messages.next();
-    socket.send(JSON.stringify({ type: 'utterance', trace: { requestId: 'request-good', sessionId: 'session-1' }, text: 'Hello' }));
+    socket.send(
+      JSON.stringify({
+        type: 'utterance',
+        trace: { requestId: 'request-good', sessionId: 'session-1' },
+        text: 'Hello',
+      }),
+    );
     expect((await messages.next()).type).toBe('meta');
     expect((await messages.next()).type).toBe('audio');
     socket.send(JSON.stringify({ type: 'repeat' }));
-    expect(await messages.next()).toMatchObject({ type: 'meta', reply: { speak: 'Previous response.' } });
+    expect(await messages.next()).toMatchObject({
+      type: 'meta',
+      reply: { speak: 'Previous response.' },
+    });
     expect((await messages.next()).type).toBe('audio');
 
     failTts = true;
-    socket.send(JSON.stringify({ type: 'utterance', trace: { requestId: 'request-tts-fail', sessionId: 'session-1' }, text: 'Again' }));
+    socket.send(
+      JSON.stringify({
+        type: 'utterance',
+        trace: { requestId: 'request-tts-fail', sessionId: 'session-1' },
+        text: 'Again',
+      }),
+    );
     expect((await messages.next()).type).toBe('meta');
-    expect(await messages.next()).toMatchObject({ type: 'error', code: 'PROCESS_FAIL', message: 'TTS unavailable' });
+    expect(await messages.next()).toMatchObject({
+      type: 'error',
+      code: 'PROCESS_FAIL',
+      message: 'TTS unavailable',
+    });
     expect(traces.records.get('request-tts-fail')?.error).toBe('TTS unavailable');
     socket.terminate();
   });
@@ -131,10 +355,23 @@ describe('V1 device stream', () => {
     apps.push(app);
     const traces = new TraceRecorder();
     let release!: () => void;
-    const wait = new Promise<void>((resolve) => { release = resolve; });
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     await deviceStreamRoutes(
       app,
-      ({ handleUserRequest: async (request: any) => { await wait; return { trace: request.trace, speak: 'Too late.', createdAt: new Date().toISOString(), suggestedAction: 'none', groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 } }; } }) as any,
+      {
+        handleUserRequest: async (request: any) => {
+          await wait;
+          return {
+            trace: request.trace,
+            speak: 'Too late.',
+            createdAt: new Date().toISOString(),
+            suggestedAction: 'none',
+            groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 },
+          };
+        },
+      } as any,
       { transcribe: async () => ({ transcript: 'Hello' }) } as any,
       { speak: async () => ({ audioBytes: Buffer.from('audio'), mimeType: 'audio/mpeg' }) } as any,
       traces,
@@ -142,9 +379,20 @@ describe('V1 device stream', () => {
     await app.ready();
     const socket = await app.injectWS('/v1/device/stream');
     const messages = new MessageQueue(socket);
-    socket.send(JSON.stringify({ type: 'hello', trace: { requestId: 'connection-stop', sessionId: 'session-1' } }));
+    socket.send(
+      JSON.stringify({
+        type: 'hello',
+        trace: { requestId: 'connection-stop', sessionId: 'session-1' },
+      }),
+    );
     await messages.next();
-    socket.send(JSON.stringify({ type: 'utterance', trace: { requestId: 'request-stop', sessionId: 'session-1' }, text: 'Wait' }));
+    socket.send(
+      JSON.stringify({
+        type: 'utterance',
+        trace: { requestId: 'request-stop', sessionId: 'session-1' },
+        text: 'Wait',
+      }),
+    );
     socket.send(JSON.stringify({ type: 'stop' }));
     expect((await messages.next()).type).toBe('stopped');
     release();
@@ -153,14 +401,25 @@ describe('V1 device stream', () => {
     socket.terminate();
   });
 
-  it('uses a frame once and acknowledges the turn that processed it', async () => {
+  it('rejects camera frames the server did not request', async () => {
     const app = Fastify();
     apps.push(app);
     const traces = new TraceRecorder();
     const images: Array<number | undefined> = [];
     await deviceStreamRoutes(
       app,
-      ({ handleUserRequest: async (request: any, image?: Buffer) => { images.push(image?.length); return { trace: request.trace, speak: 'Done.', createdAt: new Date().toISOString(), suggestedAction: 'none', groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 } }; } }) as any,
+      {
+        handleUserRequest: async (request: any, image?: Buffer) => {
+          images.push(image?.length);
+          return {
+            trace: request.trace,
+            speak: 'Done.',
+            createdAt: new Date().toISOString(),
+            suggestedAction: 'none',
+            groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 },
+          };
+        },
+      } as any,
       { transcribe: async () => ({ transcript: 'Hello' }) } as any,
       { speak: async () => ({ audioBytes: Buffer.from('audio'), mimeType: 'audio/mpeg' }) } as any,
       traces,
@@ -172,16 +431,24 @@ describe('V1 device stream', () => {
     const turn = { requestId: 'request-frame', sessionId: 'session-1' };
     socket.send(JSON.stringify({ type: 'hello', trace: connection }));
     await messages.next();
-    socket.send(JSON.stringify({ type: 'frame', trace: turn, seq: 7, mime: 'image/jpeg', bytesBase64: 'a'.repeat(20) }));
-    socket.send(JSON.stringify({ type: 'utterance', trace: turn, text: 'Describe this' }));
-    expect(await messages.next()).toMatchObject({ type: 'ack', seq: 7, processed: true, trace: turn });
-    await messages.next();
-    await messages.next();
-    socket.send(JSON.stringify({ type: 'utterance', trace: { requestId: 'request-next', sessionId: 'session-1' }, text: 'Again' }));
-    await messages.next();
-    await messages.next();
-    expect(images).toEqual([15, undefined]);
+    socket.send(
+      JSON.stringify({
+        type: 'frame',
+        trace: turn,
+        frameId: 'frame-request-7',
+        seq: 7,
+        mime: 'image/jpeg',
+        bytesBase64: 'a'.repeat(20),
+        capturedAt: new Date().toISOString(),
+        ageMs: 0,
+      }),
+    );
+    expect(await messages.next()).toMatchObject({
+      type: 'error',
+      code: 'UNEXPECTED_FRAME',
+      trace: turn,
+    });
+    expect(images).toEqual([]);
     socket.terminate();
   });
-
 });

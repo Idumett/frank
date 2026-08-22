@@ -25,6 +25,15 @@ export const UserRequestSchema = z.object({
    */
   hasImage: z.boolean().default(true),
 
+  imageEvidence: z
+    .object({
+      frameId: z.string().min(8),
+      capturedAt: IsoDateTimeSchema,
+      ageMs: z.number().int().min(0),
+      clientQuality: z.enum(['unknown', 'good', 'poor']).default('unknown'),
+    })
+    .optional(),
+
   /** Optional query for recall/search intent */
   query: z.string().optional(),
 

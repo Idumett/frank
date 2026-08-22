@@ -35,6 +35,13 @@ export const AssistantReplySchema = z.object({
       usedMemoryHits: z.number().min(0).default(0),
     })
     .default({ usedOcr: false, usedLabels: false, usedMemoryHits: 0 }),
+
+  imageEvidence: z
+    .object({
+      quality: z.enum(['good', 'ok', 'poor']),
+      notes: z.array(z.string()),
+    })
+    .optional(),
 });
 
 export type AssistantReply = z.infer<typeof AssistantReplySchema>;

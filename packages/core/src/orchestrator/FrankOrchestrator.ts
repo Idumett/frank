@@ -159,7 +159,8 @@ export class FrankOrchestrator {
           imageBytes: imageBytes.length,
         });
 
-        // 1) Vision calls (parallel) - count calls before spending
+        // Ask only the vision service that can answer this intent. Remembering a
+        // scene keeps both text and object evidence because it may be recalled later.
         const callArgs = { trace: request.trace, imageBytes, capturedAt: now };
         const runVision = async (
           name: 'vision.ocr' | 'vision.labels',
@@ -167,17 +168,20 @@ export class FrankOrchestrator {
         ) => {
           if (!spendVision()) return null;
 
-          return stage(name, () => withDeadline(
-            () => fn.call(this.deps.vision, callArgs),
-            10_000,
+          return stage(
             name,
-          ), {
-            imageBytes: imageBytes.length,
-          });
+            () => withDeadline(() => fn.call(this.deps.vision, callArgs), 10_000, name),
+            {
+              imageBytes: imageBytes.length,
+            },
+          );
         };
+        const wantsOcr = request.intent === 'read_text' || request.intent === 'remember_this';
+        const wantsLabels =
+          request.intent === 'describe_scene' || request.intent === 'remember_this';
         [ocrRes, labelsRes] = await Promise.all([
-          runVision('vision.ocr', this.deps.vision.analyzeOCR),
-          runVision('vision.labels', this.deps.vision.analyzeLabels),
+          wantsOcr ? runVision('vision.ocr', this.deps.vision.analyzeOCR) : null,
+          wantsLabels ? runVision('vision.labels', this.deps.vision.analyzeLabels) : null,
         ]);
       }
 
@@ -199,10 +203,14 @@ export class FrankOrchestrator {
       if (userText) {
         // If user asked anything, search memory using that text
         const memoryLimit = positiveInt(process.env.LLM_MEMORY_HIT_LIMIT, 4);
-        memoryHits = await stage('memory.search', () => this.deps.memory.search(userId, userText, memoryLimit), {
-          query: userText,
-          limit: memoryLimit,
-        });
+        memoryHits = await stage(
+          'memory.search',
+          () => this.deps.memory.search(userId, userText, memoryLimit),
+          {
+            query: userText,
+            limit: memoryLimit,
+          },
+        );
       } else if (request.intent === 'recall') {
         // recall with no query: just return recent-ish hits (optional)
         memoryHits = await stage('memory.search', () => this.deps.memory.search(userId, '', 0), {
@@ -239,6 +247,9 @@ export class FrankOrchestrator {
             usedLabels: (perception.labels?.length ?? 0) > 0,
             usedMemoryHits: memoryHits.length,
           },
+          imageEvidence: quality
+            ? { quality: quality.imageQuality, notes: quality.notes }
+            : undefined,
         };
         const parsed = AssistantReplySchema.parse(reply);
         if (options.finishTrace !== false) {
@@ -261,6 +272,9 @@ export class FrankOrchestrator {
             usedLabels: (perception.labels?.length ?? 0) > 0,
             usedMemoryHits: memoryHits.length,
           },
+          imageEvidence: quality
+            ? { quality: quality.imageQuality, notes: quality.notes }
+            : undefined,
         };
         const parsed = AssistantReplySchema.parse(reply);
         if (options.finishTrace !== false) {
@@ -283,12 +297,15 @@ export class FrankOrchestrator {
       budget.recordLlmCall();
 
       const memoryChars = positiveInt(process.env.LLM_MEMORY_ITEM_CHAR_LIMIT, 400);
-      const compactMemoryHits = memoryHits.map((m) => `${m.title}: ${m.content}`.slice(0, memoryChars));
+      const compactMemoryHits = memoryHits.map((m) =>
+        `${m.title}: ${m.content}`.slice(0, memoryChars),
+      );
       const conversationLimit = positiveInt(process.env.LLM_CONVERSATION_TURN_LIMIT, 6);
       const conversationTurns = request.trace.sessionId
         ? await stage(
             'conversation.get_recent',
-            () => this.deps.conversation.getRecent(userId, request.trace.sessionId!, conversationLimit),
+            () =>
+              this.deps.conversation.getRecent(userId, request.trace.sessionId!, conversationLimit),
             { sessionId: request.trace.sessionId, limit: conversationLimit },
           )
         : [];
@@ -301,14 +318,19 @@ export class FrankOrchestrator {
       const llmReply = await stage(
         'llm.generate_reply',
         () =>
-          withDeadline(() => this.deps.llm.generateReply({
-            trace: request.trace,
-            userUtterance: request.utterance,
-            perception,
-            memoryHits: compactMemoryHits,
-            conversationContext,
-            now,
-          }), 25_000, 'llm.generate_reply'),
+          withDeadline(
+            () =>
+              this.deps.llm.generateReply({
+                trace: request.trace,
+                userUtterance: request.utterance,
+                perception,
+                memoryHits: compactMemoryHits,
+                conversationContext,
+                now,
+              }),
+            25_000,
+            'llm.generate_reply',
+          ),
         {
           memoryHits: compactMemoryHits.length,
           hasConversationContext: Boolean(conversationContext),
@@ -319,7 +341,11 @@ export class FrankOrchestrator {
       if (llmReply.providerMetadata?.usage) {
         const timestamp = new Date().toISOString();
         await this.deps.observability.addStage(requestId, {
-          name: 'llm.usage', startedAt: timestamp, endedAt: timestamp, durationMs: 0, ok: true,
+          name: 'llm.usage',
+          startedAt: timestamp,
+          endedAt: timestamp,
+          durationMs: 0,
+          ok: true,
           data: llmReply.providerMetadata.usage,
         });
       }
@@ -338,6 +364,9 @@ export class FrankOrchestrator {
       const reply: AssistantReply = AssistantReplySchema.parse({
         ...llmReply,
         speak,
+        imageEvidence: quality
+          ? { quality: quality.imageQuality, notes: quality.notes }
+          : undefined,
         // Keep the reply deterministic in suggestedAction for low confidence
         suggestedAction:
           policy.confidence === 'low' ? 'recapture' : (llmReply.suggestedAction ?? 'none'),
