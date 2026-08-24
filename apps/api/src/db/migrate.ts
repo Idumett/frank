@@ -94,6 +94,20 @@ export function migrate() {
     CREATE INDEX IF NOT EXISTS idx_prefs_user_session ON user_prefs(user_id, session_id);
     CREATE INDEX IF NOT EXISTS idx_traces_user_started ON request_traces(user_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS idx_sessions_user_seen ON sessions(user_id, last_seen_at DESC);
+
+    CREATE TABLE IF NOT EXISTS product_entities (
+      owner_id TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL,
+      schema_version TEXT NOT NULL, payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      PRIMARY KEY (owner_id, entity_type, entity_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_entities_owner_updated
+      ON product_entities(owner_id, entity_type, updated_at DESC);
+    CREATE TABLE IF NOT EXISTS product_operations (
+      owner_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL, response_json TEXT NOT NULL, created_at TEXT NOT NULL,
+      PRIMARY KEY (owner_id, idempotency_key)
+    );
   `);
 
   // embeddings: optional (for later semantic search)
@@ -116,11 +130,15 @@ export function migrate() {
 function ensureColumn(db: Database.Database, table: string, definition: string) {
   const name = definition.split(' ')[0];
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-  if (!columns.some((column) => column.name === name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+  if (!columns.some((column) => column.name === name))
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
 }
 
 function scopeMemoryIdsToUsers(db: Database.Database) {
-  const columns = db.prepare('PRAGMA table_info(memory_items)').all() as Array<{ name: string; pk: number }>;
+  const columns = db.prepare('PRAGMA table_info(memory_items)').all() as Array<{
+    name: string;
+    pk: number;
+  }>;
   if (columns.find((column) => column.name === 'user_id')?.pk) return;
   db.exec(`
     CREATE TABLE memory_items_scoped (

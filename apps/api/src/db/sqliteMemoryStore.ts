@@ -11,19 +11,26 @@ type SearchOptions = {
 
 export class SqliteMemoryStore {
   private db: Database.Database;
+  private ownsConnection: boolean;
 
-  constructor(dbPath = DB_PATH) {
+  constructor(dbPath: string | Database.Database = DB_PATH) {
+    if (typeof dbPath !== 'string') {
+      this.db = dbPath;
+      this.ownsConnection = false;
+      return;
+    }
     const dir = path.dirname(dbPath);
     fs.mkdirSync(dir, { recursive: true });
 
     this.db = new Database(dbPath);
+    this.ownsConnection = true;
 
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
   }
 
   close() {
-    this.db.close();
+    if (this.ownsConnection) this.db.close();
   }
 
   //the any isnt recommended.

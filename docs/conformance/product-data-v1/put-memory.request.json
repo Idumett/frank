@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "1",
+  "requestId": "request-fixture-001",
+  "ownerId": "dan",
+  "operation": "put",
+  "idempotencyKey": "write-fixture-001",
+  "entity": {
+    "schemaVersion": "1",
+    "entityType": "memory",
+    "id": "memory-fixture-001",
+    "ownerId": "dan",
+    "memoryType": "object",
+    "title": "Front door key",
+    "content": "The key is in the blue bowl.",
+    "tags": ["key", "hallway"],
+    "createdAt": "2026-08-24T08:15:00.000Z",
+    "updatedAt": "2026-08-24T08:15:00.000Z",
+    "provenance": {
+      "source": "chivora_fixture",
+      "requestId": "request-fixture-001"
+    }
+  }
+}

@@ -7,14 +7,14 @@ import { TtsProvider, SttProvider } from '@frank/providers';
 import { FrankOrchestrator, pickDeviceSpeak, resolveTtsPrefs } from '@frank/core';
 import { observedStage } from '../observability/stage.js';
 import { UserPrefsStoreAdapter } from '../prefs/UserPrefsStoreAdapter.js';
-import { UserPrefsStore } from '../prefs/UserPrefsStore.js';
+import type { ProductDataPort } from '../productData/ProductDataPort.js';
 
 export async function deviceRoutes(
   app: FastifyInstance,
   frank: FrankOrchestrator,
   _stt: SttProvider,
   tts: TtsProvider,
-  deps: { prefs: UserPrefsStore; observability: ObservabilityStore; claim: (userId: string, sessionId?: string) => void },
+  deps: { prefs: ProductDataPort; observability: ObservabilityStore; claim: (userId: string, sessionId?: string) => void },
 ) {
   await app.register(multipart, { limits: { fileSize: 8 * 1024 * 1024, files: 1 } });
 

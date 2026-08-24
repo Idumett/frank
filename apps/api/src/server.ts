@@ -12,7 +12,6 @@ import {
 import { makeFrank } from './coreWiring.js';
 import { migrate } from './db/migrate.js';
 import { SqliteMemoryStore } from './db/sqliteMemoryStore.js';
-import { UserPrefsStore } from './prefs/UserPrefsStore.js';
 import { checkCooldown } from './rateLimit.js';
 
 import { sttRoutes } from './routes/stt.js';
@@ -26,31 +25,33 @@ import { GoogleSttProvider, GoogleTtsProvider } from '@frank/providers';
 import { NoopObservabilityStore } from '@frank/core';
 import { SqliteObservabilityStore } from './observability/SqliteObservabilityStore.js';
 import { observedStage } from './observability/stage.js';
-import { SqliteConversationStore } from './conversation/SqliteConversationStore.js';
 import { TokenRegistry } from './security/auth.js';
 import { RateLimiter } from './security/rateLimiter.js';
-import { SessionOwnershipError, SessionOwnershipStore } from './security/sessionOwnership.js';
+import { SessionOwnershipError } from './security/sessionOwnership.js';
 import { applyRetention } from './security/retention.js';
 import { TTS_CACHE_DIR } from './ttsCache.js';
+import { SqliteProductDataAdapter } from './productData/SqliteProductDataAdapter.js';
+import { productDataRoutes } from './routes/productData.js';
 
 migrate();
 const sqlite = new SqliteMemoryStore();
-const memoryStore = {
-  add: async (userId: string, item: MemoryItem) => sqlite.add(userId, item),
-  search: async (userId: string, query: string, limit: number) => sqlite.search(userId, query, { limit }),
-  recent: (userId: string, limit: number) => sqlite.recent(userId, limit),
-  delete: (userId: string, ids: string[]) => sqlite.delete(userId, ids),
-};
-const prefs = new UserPrefsStore(sqlite.rawDb);
-const conversationStore = new SqliteConversationStore(sqlite.rawDb);
-const sessions = new SessionOwnershipStore(sqlite.rawDb);
+const productData = new SqliteProductDataAdapter(sqlite.rawDb);
+const memoryStore = productData;
+const prefs = productData;
+const conversationStore = productData;
 const observabilityStore =
   process.env.OBSERVABILITY_ENABLED === 'true'
     ? new SqliteObservabilityStore(sqlite.rawDb)
     : new NoopObservabilityStore();
 const frank = makeFrank(memoryStore, conversationStore, observabilityStore);
 const app = Fastify({
-  logger: { level: process.env.LOG_LEVEL ?? 'info', redact: { paths: ['req.headers.authorization', 'req.body', 'res.headers.set-cookie'], censor: '[redacted]' } },
+  logger: {
+    level: process.env.LOG_LEVEL ?? 'info',
+    redact: {
+      paths: ['req.headers.authorization', 'req.body', 'res.headers.set-cookie'],
+      censor: '[redacted]',
+    },
+  },
   bodyLimit: 12 * 1024 * 1024,
   genReqId: () => crypto.randomUUID(),
 });
@@ -60,7 +61,8 @@ const tts = new GoogleTtsProvider();
 await app.register(sensible);
 
 const authFile = process.env.FRANK_AUTH_FILE;
-if (process.env.NODE_ENV === 'production' && !authFile) throw new Error('FRANK_AUTH_FILE is required in production');
+if (process.env.NODE_ENV === 'production' && !authFile)
+  throw new Error('FRANK_AUTH_FILE is required in production');
 const tokens = authFile ? new TokenRegistry(authFile) : null;
 const authFailures = new RateLimiter(20, 60_000);
 const productRequests = new RateLimiter(Number(process.env.PRODUCT_RATE_LIMIT ?? 90), 60_000);
@@ -73,21 +75,35 @@ app.addHook('onRequest', async (req, reply) => {
   const auth = tokens.authenticate(req.headers.authorization, diagnostics);
   if (!auth) {
     const attempt = authFailures.take(req.ip);
-    if (!attempt.allowed) return reply.header('retry-after', attempt.retryAfterSeconds).code(429).send({ error: 'Too many attempts' });
+    if (!attempt.allowed)
+      return reply
+        .header('retry-after', attempt.retryAfterSeconds)
+        .code(429)
+        .send({ error: 'Too many attempts' });
     return reply.code(401).send({ error: 'Unauthorized' });
   }
   if (auth.kind === 'user') {
     req.userId = auth.userId;
-    const rate = productRequests.take(`${auth.userId}:${req.routeOptions.url ?? req.url.split('?')[0]}`);
-    if (!rate.allowed) return reply.header('retry-after', rate.retryAfterSeconds).code(429).send({ error: 'Too many requests' });
+    const rate = productRequests.take(
+      `${auth.userId}:${req.routeOptions.url ?? req.url.split('?')[0]}`,
+    );
+    if (!rate.allowed)
+      return reply
+        .header('retry-after', rate.retryAfterSeconds)
+        .code(429)
+        .send({ error: 'Too many requests' });
   }
 });
 
 app.setErrorHandler((error: any, req, reply) => {
-  if (error instanceof SessionOwnershipError) return reply.code(403).send({ error: 'Session unavailable', requestId: req.id });
-  const status = error.statusCode && error.statusCode >= 400 && error.statusCode < 500 ? error.statusCode : 500;
+  if (error instanceof SessionOwnershipError)
+    return reply.code(403).send({ error: 'Session unavailable', requestId: req.id });
+  const status =
+    error.statusCode && error.statusCode >= 400 && error.statusCode < 500 ? error.statusCode : 500;
   req.log.error({ requestId: req.id, status, errorType: error.name }, 'request_failed');
-  return reply.code(status).send({ error: status === 500 ? 'Request failed' : 'Invalid request', requestId: req.id });
+  return reply
+    .code(status)
+    .send({ error: status === 500 ? 'Request failed' : 'Invalid request', requestId: req.id });
 });
 
 async function normalizeImage(imageBytes: Buffer) {
@@ -115,9 +131,12 @@ app.addHook('onSend', async (req, reply) => {
 
 app.get('/health', async () => ({ ok: true }));
 
-const claim = (userId: string, sessionId?: string) => sessions.claim(userId, sessionId);
+const claim = (userId: string, sessionId?: string) => productData.claimSession(userId, sessionId);
 applyRetention(sqlite.rawDb, TTS_CACHE_DIR);
-const retentionTimer = setInterval(() => applyRetention(sqlite.rawDb, TTS_CACHE_DIR), 24 * 60 * 60 * 1000);
+const retentionTimer = setInterval(
+  () => applyRetention(sqlite.rawDb, TTS_CACHE_DIR),
+  24 * 60 * 60 * 1000,
+);
 retentionTimer.unref();
 
 app.post('/v1/analyze', async (req) => {
@@ -150,7 +169,10 @@ app.post('/v1/analyze', async (req) => {
       { inputBytes: sourceBytes.length },
     );
   } catch (error: any) {
-    await observabilityStore.fail(body.trace.requestId, error?.message ?? 'Image normalization failed');
+    await observabilityStore.fail(
+      body.trace.requestId,
+      error?.message ?? 'Image normalization failed',
+    );
     throw error;
   }
 
@@ -268,13 +290,16 @@ await ttsRoutes(app, tts, observabilityStore, claim);
 
 await ttsVoicesRoutes(app);
 await prefsTtsRoutes(app, { prefs, claim });
+await productDataRoutes(app, productData);
 
 if (observabilityStore instanceof SqliteObservabilityStore) {
   await diagRoutes(app, { observability: observabilityStore });
 }
 
 await deviceRoutes(app, frank, stt, tts, { prefs, observability: observabilityStore, claim });
-await deviceStreamRoutes(app, frank, stt, tts, observabilityStore, claim, (userId) => streamRequests.take(userId));
+await deviceStreamRoutes(app, frank, stt, tts, observabilityStore, claim, (userId) =>
+  streamRequests.take(userId),
+);
 
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '0.0.0.0';
