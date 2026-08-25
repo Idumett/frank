@@ -4,7 +4,11 @@ import websocket from '@fastify/websocket';
 import { z } from 'zod';
 
 import { TtsProvider, SttProvider } from '@frank/providers';
-import { UserRequestSchema } from '@frank/contracts';
+import {
+  ContextSnapshotV1Schema,
+  UserRequestSchema,
+  type ContextSnapshotV1,
+} from '@frank/contracts';
 import {
   FrankOrchestrator,
   pickDeviceSpeak,
@@ -12,6 +16,11 @@ import {
   type ObservabilityStore,
 } from '@frank/core';
 import { frameAge, inferIntent, intentNeedsImage, maxFrameAgeMs } from '../evidence/policy.js';
+import {
+  ContextSnapshotError,
+  selectContext,
+  validateSnapshot,
+} from '../context/contextSnapshot.js';
 
 const TraceSchema = UserRequestSchema.shape.trace;
 
@@ -51,6 +60,7 @@ const ClientMsgSchema = z.discriminatedUnion('type', [
     quality: z.enum(['unknown', 'good', 'poor']).default('unknown'),
   }),
   z.object({ type: z.literal('stop') }),
+  z.object({ type: z.literal('context_snapshot'), snapshot: ContextSnapshotV1Schema }),
   z.object({ type: z.literal('repeat') }),
   z.object({ type: z.literal('ping'), t: z.number() }),
 ]);
@@ -109,6 +119,7 @@ export async function deviceStreamRoutes(
     let inFlight = false;
     let activeOperation = 0;
     let abort = new AbortController();
+    let currentContext: ContextSnapshotV1 | null = null;
 
     safeSend(socket, { type: 'connected', trace: { requestId: req.id } });
 
@@ -153,6 +164,26 @@ export async function deviceStreamRoutes(
         lastIntent = m.intent;
         lastQuery = m.query;
         return;
+      }
+
+      if (m.type === 'context_snapshot') {
+        if (!connectionTrace?.sessionId)
+          return safeSend(socket, { type: 'error', message: 'Send hello first', code: 'NO_HELLO' });
+        try {
+          currentContext = validateSnapshot(m.snapshot, connectionTrace.sessionId);
+          return safeSend(socket, {
+            type: 'context_ack',
+            snapshotId: currentContext.snapshotId,
+            acceptedAt: new Date().toISOString(),
+          });
+        } catch (error) {
+          const code = error instanceof ContextSnapshotError ? error.code : 'BAD_CONTEXT';
+          return safeSend(socket, {
+            type: 'error',
+            message: 'Context snapshot was rejected',
+            code,
+          });
+        }
       }
 
       if (m.type === 'frame') {
@@ -492,6 +523,20 @@ export async function deviceStreamRoutes(
       }
 
       try {
+        const contextCandidate = selectContext(currentContext, lastIntent, utterance, frame?.frameId);
+        const selectedContext = await stage(
+          requestTrace,
+          'context.select',
+          async () => contextCandidate,
+          {
+            snapshotId: currentContext?.snapshotId,
+            snapshotAgeMs: currentContext
+              ? Date.now() - Date.parse(currentContext.capturedAt)
+              : undefined,
+            selectedKeys: contextCandidate?.facts.map((fact) => fact.key) ?? [],
+            statuses: contextCandidate?.facts.map((fact) => fact.status) ?? [],
+          },
+        );
         const request = UserRequestSchema.parse({
           trace: requestTrace,
           intent: lastIntent,
@@ -508,6 +553,7 @@ export async function deviceStreamRoutes(
             : undefined,
           query: lastIntent === 'recall' ? lastQuery : undefined,
           requestedAt: new Date().toISOString(),
+          context: selectedContext,
         });
 
         const assistantReply = await frank.handleUserRequest(request, frame?.bytes, {

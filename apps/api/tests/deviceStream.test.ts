@@ -173,6 +173,68 @@ describe('V1 device stream', () => {
     socket.terminate();
   });
 
+  it('acknowledges a snapshot and selects only context relevant to the turn', async () => {
+    const app = Fastify();
+    apps.push(app);
+    const traces = new TraceRecorder();
+    let received: any;
+    await deviceStreamRoutes(
+      app,
+      {
+        handleUserRequest: async (request: any) => {
+          received = request.context;
+          return {
+            trace: request.trace,
+            speak: 'You appear to be nearby.',
+            createdAt: new Date().toISOString(),
+            suggestedAction: 'none',
+            groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 },
+          };
+        },
+      } as any,
+      { transcribe: async () => ({ transcript: 'Where am I?' }) } as any,
+      { speak: async () => ({ audioBytes: Buffer.from('audio'), mimeType: 'audio/mpeg' }) } as any,
+      traces,
+    );
+    await app.ready();
+    const socket = await app.injectWS('/v1/device/stream');
+    const messages = new MessageQueue(socket);
+    socket.send(
+      JSON.stringify({
+        type: 'hello',
+        trace: { requestId: 'connection-context', sessionId: 'session-context' },
+      }),
+    );
+    await messages.next();
+    socket.send(
+      JSON.stringify({ type: 'context_snapshot', snapshot: contextSnapshot('session-context') }),
+    );
+    expect(await messages.next()).toMatchObject({
+      type: 'context_ack',
+      snapshotId: 'snapshot-context-001',
+    });
+    socket.send(
+      JSON.stringify({
+        type: 'audio',
+        trace: { requestId: 'request-context', sessionId: 'session-context' },
+        mime: 'audio/wav',
+        audioBase64: 'a'.repeat(20),
+      }),
+    );
+    await messages.next();
+    await messages.next();
+    await messages.next();
+    expect(received.facts.map((fact: any) => fact.key)).toEqual([
+      'location',
+      'movement',
+      'location_permission',
+    ]);
+    expect(traces.records.get('request-context')?.stages.map((stage) => stage.name)).toContain(
+      'context.select',
+    );
+    socket.terminate();
+  });
+
   it('requests fresh evidence only after a visual intent is understood', async () => {
     const app = Fastify();
     apps.push(app);
@@ -452,3 +514,48 @@ describe('V1 device stream', () => {
     socket.terminate();
   });
 });
+
+function contextSnapshot(sessionId: string) {
+  const now = Date.now();
+  const provenance = (source = 'android_system') => ({
+    source,
+    collectedAt: new Date(now).toISOString(),
+  });
+  const known = (value: unknown, source?: string) => ({
+    status: 'known',
+    value,
+    observedAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + 20_000).toISOString(),
+    provenance: provenance(source),
+  });
+  const unknown = () => ({
+    status: 'unknown',
+    reason: 'not_collected',
+    provenance: provenance('android_app'),
+  });
+  return {
+    schemaVersion: '1',
+    snapshotId: 'snapshot-context-001',
+    sessionId,
+    capturedAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + 20_000).toISOString(),
+    time: known({ timezone: 'Europe/London', utcOffsetMinutes: 60 }),
+    permissions: {
+      microphone: known('granted'),
+      camera: known('granted'),
+      location: known('granted'),
+      activity: unknown(),
+    },
+    device: {
+      connectivity: known('online'),
+      screen: known('locked'),
+      headphones: known(true),
+      batteryPercent: known(80),
+      cameraAvailable: known(true),
+    },
+    app: known({ state: 'listening', sessionOpen: true }, 'android_app'),
+    location: known({ latitude: 51.5, longitude: -0.1, accuracyMeters: 12 }, 'android_sensor'),
+    movement: known({ state: 'stationary', confidence: 0.8 }, 'android_sensor'),
+    evidence: unknown(),
+  };
+}

@@ -23,6 +23,8 @@ function summarizeInput(args: { request: UserRequest; hasImage: boolean }) {
     query: args.request.query,
     requestedAt: args.request.requestedAt,
     hasImage: args.hasImage,
+    contextSnapshotId: args.request.context?.snapshotId,
+    contextFactCount: args.request.context?.facts.length ?? 0,
   };
 }
 
@@ -141,6 +143,21 @@ export class FrankOrchestrator {
     });
 
     try {
+      if (isRoadCrossingQuestion(request.utterance ?? request.query ?? '')) {
+        const reply = AssistantReplySchema.parse({
+          trace: request.trace,
+          speak:
+            "I can't determine whether a road is safe to cross. Please use your normal crossing method.",
+          createdAt: now,
+          suggestedAction: 'none',
+          groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 },
+        });
+        await stage('policy.road_crossing', async () => true, { blocked: true });
+        if (options.finishTrace !== false) {
+          await this.deps.observability.finish(requestId, summarizeOutput(reply));
+        }
+        return reply;
+      }
       const budget = new CallBudget({ maxVisionCalls: 2, maxLlmCalls: 1 });
       const spendVision = () => {
         if (!budget.canCallVision()) return false;
@@ -326,6 +343,7 @@ export class FrankOrchestrator {
                 perception,
                 memoryHits: compactMemoryHits,
                 conversationContext,
+                context: formatSelectedContext(request.context),
                 now,
               }),
             25_000,
@@ -334,6 +352,7 @@ export class FrankOrchestrator {
         {
           memoryHits: compactMemoryHits.length,
           hasConversationContext: Boolean(conversationContext),
+          contextFactCount: request.context?.facts.length ?? 0,
           hasOcr: Boolean(perception.ocr?.fullText?.trim()),
           labelCount: perception.labels?.length ?? 0,
         },
@@ -443,4 +462,20 @@ export class FrankOrchestrator {
 function positiveInt(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function formatSelectedContext(context: UserRequest['context']) {
+  if (!context?.facts.length) return undefined;
+  return context.facts
+    .map(
+      (fact) =>
+        `${fact.key}=${fact.status}${fact.value === undefined ? '' : `:${JSON.stringify(fact.value)}`}`,
+    )
+    .join(' | ');
+}
+
+function isRoadCrossingQuestion(text: string) {
+  return /\b(safe|okay|ok|clear|can i|should i|when should i)\b.{0,35}\b(cross|crossing|road|street|traffic)\b|\b(cross|crossing)\b.{0,35}\b(safe|clear|now)\b/i.test(
+    text,
+  );
 }

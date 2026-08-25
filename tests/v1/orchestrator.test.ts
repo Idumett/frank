@@ -207,4 +207,17 @@ describe('V1 orchestrator', () => {
       notes: ['empty_image'],
     });
   });
+
+  it('blocks road-crossing safety claims before calling the LLM', async () => {
+    const { frank, llm, traces } = makeFrank();
+    const reply = await frank.handleUserRequest(
+      { ...request('help', 'Is it safe to cross the road now?'), hasImage: false },
+      undefined,
+    );
+    expect(reply.speak).toContain("can't determine whether a road is safe");
+    expect(llm).not.toHaveBeenCalled();
+    expect(traces.records.get('request-help')?.stages.map((stage) => stage.name)).toContain(
+      'policy.road_crossing',
+    );
+  });
 });

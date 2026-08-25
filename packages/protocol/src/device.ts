@@ -1,4 +1,5 @@
 import type { DeviceTrace } from './v1.js';
+import type { ContextSnapshotV1 } from '@frank/contracts';
 
 export type ClientMsg =
   | { type: 'hello'; trace: DeviceTrace; device?: { model?: string; fw?: string } }
@@ -27,12 +28,14 @@ export type ClientMsg =
       quality?: 'unknown' | 'good' | 'poor';
     }
   | { type: 'stop' }
+  | { type: 'context_snapshot'; snapshot: ContextSnapshotV1 }
   | { type: 'repeat' }
   | { type: 'ping'; t: number };
 
 export type ServerMsg =
   | { type: 'connected'; trace: DeviceTrace }
   | { type: 'ready'; trace: DeviceTrace }
+  | { type: 'context_ack'; snapshotId: string; acceptedAt: string }
   | {
       type: 'frame_required';
       trace: DeviceTrace;

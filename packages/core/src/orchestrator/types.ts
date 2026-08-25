@@ -54,6 +54,7 @@ export interface FrankDeps {
       perception: PerceptionResult;
       memoryHits: string[];
       conversationContext: string;
+      context?: string;
       now: string;
     }): Promise<AssistantReply & { providerMetadata?: { usage?: Record<string, unknown> } }>;
   };

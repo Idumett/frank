@@ -37,6 +37,7 @@ export class GeminiLlmProvider implements LlmProvider {
     perception: PerceptionResult;
     memoryHits: string[];
     conversationContext?: string;
+    context?: string;
     now: string;
   }): Promise<AssistantReply> {
     const ocrText = args.perception.ocr?.fullText?.trim() ?? '';
@@ -68,17 +69,21 @@ export class GeminiLlmProvider implements LlmProvider {
       },
     };
 
-    const parsed = AssistantReplySchema.parse(reply) as AssistantReply & { providerMetadata?: { usage: GeminiUsage } };
+    const parsed = AssistantReplySchema.parse(reply) as AssistantReply & {
+      providerMetadata?: { usage: GeminiUsage };
+    };
     const usage = response.usageMetadata;
-    parsed.providerMetadata = { usage: {
-      promptTokens: usage?.promptTokenCount,
-      outputTokens: usage?.candidatesTokenCount,
-      thoughtTokens: usage?.thoughtsTokenCount,
-      totalTokens: usage?.totalTokenCount,
-      cachedTokens: usage?.cachedContentTokenCount,
-      cacheHit: (usage?.cachedContentTokenCount ?? 0) > 0,
-      latencyMs: Date.now() - startedAt,
-    } };
+    parsed.providerMetadata = {
+      usage: {
+        promptTokens: usage?.promptTokenCount,
+        outputTokens: usage?.candidatesTokenCount,
+        thoughtTokens: usage?.thoughtsTokenCount,
+        totalTokens: usage?.totalTokenCount,
+        cachedTokens: usage?.cachedContentTokenCount,
+        cacheHit: (usage?.cachedContentTokenCount ?? 0) > 0,
+        latencyMs: Date.now() - startedAt,
+      },
+    };
     return parsed;
   }
 }
@@ -95,7 +100,10 @@ function boundedNumber(value: string | undefined, fallback: number, min: number,
 
 function thinkingLevel(value: string | undefined) {
   const levels: Record<string, ThinkingLevel> = {
-    minimal: ThinkingLevel.MINIMAL, low: ThinkingLevel.LOW, medium: ThinkingLevel.MEDIUM, high: ThinkingLevel.HIGH,
+    minimal: ThinkingLevel.MINIMAL,
+    low: ThinkingLevel.LOW,
+    medium: ThinkingLevel.MEDIUM,
+    high: ThinkingLevel.HIGH,
   };
   return levels[value?.toLowerCase() ?? 'minimal'] ?? ThinkingLevel.MINIMAL;
 }

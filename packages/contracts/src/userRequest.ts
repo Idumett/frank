@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { IsoDateTimeSchema, TraceSchema } from './common.js';
+import { SelectedContextV1Schema } from './contextSnapshotV1.js';
 
 export const IntentSchema = z.enum([
   'read_text', // OCR-focused
@@ -38,6 +39,7 @@ export const UserRequestSchema = z.object({
   query: z.string().optional(),
 
   requestedAt: IsoDateTimeSchema,
+  context: SelectedContextV1Schema.optional(),
 });
 
 export type UserRequest = z.infer<typeof UserRequestSchema>;
