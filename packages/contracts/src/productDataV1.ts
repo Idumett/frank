@@ -8,6 +8,8 @@ export const ProductEntityTypeV1Schema = z.enum([
   'memory',
   'conversation_turn',
   'preferences',
+  'known_place',
+  'hazard',
 ]);
 
 export const ProductProvenanceV1Schema = z.object({
@@ -62,13 +64,50 @@ export const PreferencesEntityV1Schema = entityBase.extend({
   }),
 });
 
+const SavedLocationV1Schema = z.object({
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  accuracyMeters: z.number().min(0).max(1_000),
+});
+const UserConfirmationV1Schema = z.object({
+  confirmedBy: z.literal('user'),
+  confirmedAt: IsoDateTimeSchema,
+});
+export const KnownPlaceEntityV1Schema = entityBase.extend({
+  entityType: z.literal('known_place'),
+  name: z.string().trim().min(1).max(80),
+  category: z.enum(['home', 'gym', 'supermarket', 'other']),
+  location: SavedLocationV1Schema,
+  confirmation: UserConfirmationV1Schema,
+  status: z.enum(['active', 'archived']).default('active'),
+  notes: z.string().trim().max(500).optional(),
+});
+export const HazardEntityV1Schema = entityBase.extend({
+  entityType: z.literal('hazard'),
+  hazardType: z.enum(['pothole', 'uneven_surface', 'obstruction', 'roadworks', 'other']),
+  description: z.string().trim().min(1).max(300),
+  location: SavedLocationV1Schema,
+  radiusMeters: z.number().min(1).max(100),
+  reportedAt: IsoDateTimeSchema,
+  expiresAt: IsoDateTimeSchema,
+  confirmation: UserConfirmationV1Schema,
+  status: z.enum(['active', 'resolved']).default('active'),
+});
+
 export const ProductEntityV1Schema = z.discriminatedUnion('entityType', [
   UserProfileEntityV1Schema,
   SessionEntityV1Schema,
   MemoryEntityV1Schema,
   ConversationTurnEntityV1Schema,
   PreferencesEntityV1Schema,
-]);
+  KnownPlaceEntityV1Schema,
+  HazardEntityV1Schema,
+]).superRefine((entity, ctx) => {
+  if (Date.parse(entity.updatedAt) < Date.parse(entity.createdAt))
+    ctx.addIssue({ code: 'custom', path: ['updatedAt'], message: 'updatedAt precedes createdAt' });
+  if (entity.entityType === 'hazard' && Date.parse(entity.expiresAt) <= Date.parse(entity.reportedAt))
+    ctx.addIssue({ code: 'custom', path: ['expiresAt'], message: 'Hazard expiry must follow its report time' });
+});
 
 const requestBase = z.object({
   schemaVersion: ProductDataVersionV1Schema,

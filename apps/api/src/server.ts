@@ -299,6 +299,7 @@ if (observabilityStore instanceof SqliteObservabilityStore) {
 await deviceRoutes(app, frank, stt, tts, { prefs, observability: observabilityStore, claim });
 await deviceStreamRoutes(app, frank, stt, tts, observabilityStore, claim, (userId) =>
   streamRequests.take(userId),
+  productData,
 );
 
 const port = Number(process.env.PORT ?? 3000);

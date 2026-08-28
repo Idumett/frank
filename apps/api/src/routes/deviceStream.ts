@@ -21,6 +21,8 @@ import {
   selectContext,
   validateSnapshot,
 } from '../context/contextSnapshot.js';
+import { LostAssistanceSession } from '../context/lostAssistance.js';
+import type { ProductDataPort } from '../productData/ProductDataPort.js';
 
 const TraceSchema = UserRequestSchema.shape.trace;
 
@@ -104,6 +106,7 @@ export async function deviceStreamRoutes(
     allowed: true,
     retryAfterSeconds: 0,
   }),
+  productData?: ProductDataPort,
 ) {
   await app.register(websocket, { options: { maxPayload: 12 * 1024 * 1024 } });
 
@@ -120,6 +123,7 @@ export async function deviceStreamRoutes(
     let activeOperation = 0;
     let abort = new AbortController();
     let currentContext: ContextSnapshotV1 | null = null;
+    const lostAssistance = productData ? new LostAssistanceSession(productData, req.userId) : null;
 
     safeSend(socket, { type: 'connected', trace: { requestId: req.id } });
 
@@ -556,11 +560,26 @@ export async function deviceStreamRoutes(
           context: selectedContext,
         });
 
-        const assistantReply = await frank.handleUserRequest(request, frame?.bytes, {
-          source: 'device_stream',
-          finishTrace: false,
-          userId: req.userId,
-        });
+        const assistance = lostAssistance?.handle(utterance, selectedContext, requestTrace.requestId);
+        const assistantReply = assistance
+          ? await stage(
+              requestTrace,
+              'context.lost_assistance',
+              async () => ({
+                trace: requestTrace,
+                speak: assistance.speak,
+                createdAt: new Date().toISOString(),
+                suggestedAction: 'none' as const,
+                groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 },
+                imageEvidence: undefined,
+              }),
+              { action: assistance.action, ...assistance.data },
+            )
+          : await frank.handleUserRequest(request, frame?.bytes, {
+              source: 'device_stream',
+              finishTrace: false,
+              userId: req.userId,
+            });
         if (localAbort.signal.aborted) return;
 
         lastReplyText = assistantReply.speak;

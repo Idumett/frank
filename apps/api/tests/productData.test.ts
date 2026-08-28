@@ -84,4 +84,26 @@ describe('V1 product-data contract', () => {
     expect(db.prepare('SELECT COUNT(*) count FROM product_entities').get()).toEqual({ count: 0 });
     db.close();
   });
+
+  it('validates confirmed places and expiring hazards', () => {
+    const base = {
+      schemaVersion: '1', ownerId: 'dan', createdAt: '2026-08-28T10:00:00.000Z',
+      updatedAt: '2026-08-28T10:00:00.000Z',
+      provenance: { source: 'frank_server', requestId: 'request-location-001' },
+      location: { latitude: 51.5, longitude: -0.1, accuracyMeters: 12 },
+      confirmation: { confirmedBy: 'user', confirmedAt: '2026-08-28T10:00:00.000Z' },
+    } as const;
+    expect(ProductDataRequestV1Schema.safeParse({
+      schemaVersion: '1', requestId: 'request-place-001', ownerId: 'dan', operation: 'put',
+      idempotencyKey: 'write-place-001',
+      entity: { ...base, entityType: 'known_place', id: 'place-gym', name: 'gym', category: 'gym', status: 'active' },
+    }).success).toBe(true);
+    expect(ProductDataRequestV1Schema.safeParse({
+      schemaVersion: '1', requestId: 'request-hazard-001', ownerId: 'dan', operation: 'put',
+      idempotencyKey: 'write-hazard-001',
+      entity: { ...base, entityType: 'hazard', id: 'hazard-pothole', hazardType: 'pothole',
+        description: 'pothole', radiusMeters: 12, reportedAt: '2026-08-28T10:00:00.000Z',
+        expiresAt: '2026-08-27T10:00:00.000Z', status: 'active' },
+    }).success).toBe(false);
+  });
 });

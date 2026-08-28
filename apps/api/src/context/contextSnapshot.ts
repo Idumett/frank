@@ -60,7 +60,7 @@ export function selectContext(
   const text = utterance.toLowerCase();
   const keys = new Set<SelectedContextV1['facts'][number]['key']>();
   if (/\b(time|date|day|today|tonight|morning|afternoon|evening)\b/.test(text)) keys.add('time');
-  if (/\b(where am i|lost|location|nearby|near me|around here|which way|direction)\b/.test(text)) {
+  if (/\b(where am i|lost|location|nearby|near me|around here|which way|direction|save|remember|report|pothole|hazard)\b/.test(text)) {
     keys.add('location');
     keys.add('movement');
     keys.add('location_permission');
