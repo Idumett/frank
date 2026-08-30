@@ -1,6 +1,6 @@
 # Context Snapshot V1
 
-The Android app sends one short-lived snapshot before each audio request. The server validates it against the active WebSocket session, keeps it only for that connection, and selects the minimum set of facts relevant to the current intent and words.
+The Android app sends one short-lived snapshot before each audio request. The server validates it against the active WebSocket session, keeps it only for that connection, and selects the minimum set of facts relevant to the current intent and words. V1 is sealed; its release checks and retention rules are in `context-snapshot-release.md`.
 
 Every signal is explicitly `known`, `unknown`, `denied`, `stale`, or `conflicting`. Known values carry observation and expiry times. Every state carries provenance. The outer snapshot expires after 30 seconds and the server refuses snapshots with another session ID, invalid chronology, excessive lifetime, or future timestamps.
 

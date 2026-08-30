@@ -86,4 +86,18 @@ describe('request diagnostics', () => {
     expect(summary.stages[0]).toMatchObject({ name: 'tts.synthesize', failures: 1 });
     db.close();
   });
+
+  it('summarises context safety incidents without retaining location values', async () => {
+    const { db, store } = makeStore();
+    await store.start({ requestId: 'req-context1', source: 'device_stream', startedAt: '2026-08-30T10:00:00.000Z', stages: [] });
+    await store.addStage('req-context1', { name: 'context.lost_assistance', startedAt: '2026-08-30T10:00:00.000Z', durationMs: 1, ok: true, data: { action: 'location_stale', incident: 'context_location_stale' } });
+    await store.finish('req-context1', { speak: 'Location unavailable' });
+    expect(store.getContextIncidents()).toEqual({
+      total: 1,
+      counts: { context_location_stale: 1 },
+      recent: [{ requestId: 'req-context1', startedAt: '2026-08-30T10:00:00.000Z', code: 'context_location_stale' }],
+    });
+    expect(JSON.stringify(store.getContextIncidents())).not.toContain('latitude');
+    db.close();
+  });
 });

@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { WebSocket } from 'ws';
-import { deviceStreamRoutes } from '../src/routes/deviceStream.js';
+import { deviceStreamRoutes, privacySafeContextUtterance } from '../src/routes/deviceStream.js';
 import type { ObservabilityStore, RequestTraceRecord, TraceStage } from '@frank/core';
 
 class TraceRecorder implements ObservabilityStore {
@@ -52,6 +52,11 @@ afterEach(async () => {
 });
 
 describe('V1 device stream', () => {
+  it('redacts place and hazard commands from retained trace input', () => {
+    expect(privacySafeContextUtterance('Save this place as my private gym')).toBe('[context data command]');
+    expect(privacySafeContextUtterance('Report a pothole outside my house')).toBe('[context data command]');
+    expect(privacySafeContextUtterance('Where am I?')).toBe('Where am I?');
+  });
   it('requires hello and refuses a second request while one is running', async () => {
     const app = Fastify();
     apps.push(app);

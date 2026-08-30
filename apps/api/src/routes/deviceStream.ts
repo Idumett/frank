@@ -182,6 +182,8 @@ export async function deviceStreamRoutes(
           });
         } catch (error) {
           const code = error instanceof ContextSnapshotError ? error.code : 'BAD_CONTEXT';
+          currentContext = null;
+          req.log.warn({ code, snapshotId: m.snapshot.snapshotId }, 'context_snapshot_rejected');
           return safeSend(socket, {
             type: 'error',
             message: 'Context snapshot was rejected',
@@ -521,7 +523,10 @@ export async function deviceStreamRoutes(
           sessionId: requestTrace.sessionId,
           source: 'device_stream',
           startedAt: new Date().toISOString(),
-          input: { ...streamInput(frame, undefined, undefined, clientSentAt), utterance },
+          input: {
+            ...streamInput(frame, undefined, undefined, clientSentAt),
+            utterance: privacySafeContextUtterance(utterance),
+          },
           stages: [],
         });
       }
@@ -640,12 +645,22 @@ export async function deviceStreamRoutes(
         );
         if (!sent) throw new Error('Failed to send audio');
 
-        await observability.finish(requestTrace.requestId, {
-          speak: assistantReply.speak,
-          suggestedAction: assistantReply.suggestedAction,
-          audioBytes: audio.audioBytes.length,
-          frameSeq: frame?.seq,
-        });
+        await observability.finish(
+          requestTrace.requestId,
+          assistance
+            ? {
+                responseType: 'context_assistance',
+                action: assistance.action,
+                audioBytes: audio.audioBytes.length,
+                frameSeq: frame?.seq,
+              }
+            : {
+                speak: assistantReply.speak,
+                suggestedAction: assistantReply.suggestedAction,
+                audioBytes: audio.audioBytes.length,
+                frameSeq: frame?.seq,
+              },
+        );
       } catch (error: any) {
         if (!localAbort.signal.aborted) {
           await observability.fail(requestTrace.requestId, error?.message ?? 'Unknown error');
@@ -670,4 +685,10 @@ export async function deviceStreamRoutes(
 function positiveInt(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function privacySafeContextUtterance(utterance: string) {
+  return /\b(save|remember|report|rename|change|update|move|correct|delete|forget|remove|resolved)\b/i.test(utterance)
+    ? '[context data command]'
+    : utterance;
 }

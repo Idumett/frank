@@ -75,7 +75,7 @@ const UserConfirmationV1Schema = z.object({
 });
 export const KnownPlaceEntityV1Schema = entityBase.extend({
   entityType: z.literal('known_place'),
-  name: z.string().trim().min(1).max(80),
+  name: z.string().trim().min(1).max(80).regex(/^[\p{L}\p{N}][\p{L}\p{N} '&().-]*$/u),
   category: z.enum(['home', 'gym', 'supermarket', 'other']),
   location: SavedLocationV1Schema,
   confirmation: UserConfirmationV1Schema,
@@ -107,6 +107,8 @@ export const ProductEntityV1Schema = z.discriminatedUnion('entityType', [
     ctx.addIssue({ code: 'custom', path: ['updatedAt'], message: 'updatedAt precedes createdAt' });
   if (entity.entityType === 'hazard' && Date.parse(entity.expiresAt) <= Date.parse(entity.reportedAt))
     ctx.addIssue({ code: 'custom', path: ['expiresAt'], message: 'Hazard expiry must follow its report time' });
+  if (entity.entityType === 'hazard' && Date.parse(entity.expiresAt) - Date.parse(entity.reportedAt) > 90 * 86_400_000)
+    ctx.addIssue({ code: 'custom', path: ['expiresAt'], message: 'Hazard retention cannot exceed 90 days' });
 });
 
 const requestBase = z.object({

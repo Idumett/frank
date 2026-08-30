@@ -21,6 +21,7 @@ export class SqliteProductDataAdapter implements ProductDataPort {
   private readonly conversations: SqliteConversationStore;
   private readonly preferences: UserPrefsStore;
   private readonly sessions: SessionOwnershipStore;
+  private lastRetentionRun = 0;
 
   constructor(private readonly db: Database.Database) {
     this.memories = new SqliteMemoryStore(db);
@@ -38,6 +39,17 @@ export class SqliteProductDataAdapter implements ProductDataPort {
   setPreferences(userId: string, sessionId: string, tts: TtsPrefs): UserPrefs { return this.preferences.set(userId, sessionId, tts); }
   getPreferences(userId: string, sessionId: string): UserPrefs | null { return this.preferences.get(userId, sessionId); }
   claimSession(userId: string, sessionId?: string) { this.sessions.claim(userId, sessionId); }
+
+  applyRetention(now = new Date()) {
+    const nowIso = now.toISOString();
+    const resolvedCutoff = new Date(now.getTime() - retentionDays('HAZARD_RESOLVED_RETENTION_DAYS', 7, 30) * 86_400_000).toISOString();
+    const operationCutoff = new Date(now.getTime() - retentionDays('PRODUCT_OPERATION_RETENTION_DAYS', 30, 90) * 86_400_000).toISOString();
+    const expiredHazards = this.db.prepare(`DELETE FROM product_entities WHERE entity_type = 'hazard' AND json_extract(payload_json, '$.expiresAt') <= ?`).run(nowIso).changes;
+    const resolvedHazards = this.db.prepare(`DELETE FROM product_entities WHERE entity_type = 'hazard' AND json_extract(payload_json, '$.status') = 'resolved' AND updated_at <= ?`).run(resolvedCutoff).changes;
+    const operations = this.db.prepare('DELETE FROM product_operations WHERE created_at <= ?').run(operationCutoff).changes;
+    this.lastRetentionRun = now.getTime();
+    return { expiredHazards, resolvedHazards, operations };
+  }
 
   execute(authenticatedOwnerId: string, input: ProductDataRequestV1): ProductDataResponseV1 {
     const request = ProductDataRequestV1Schema.parse(input);
@@ -59,6 +71,7 @@ export class SqliteProductDataAdapter implements ProductDataPort {
     }
 
     try {
+      if (Date.now() - this.lastRetentionRun >= 3_600_000) this.applyRetention();
       return this.db.transaction(() => this.run(request))();
     } catch (error) {
       if (error instanceof IdempotencyConflict) {
@@ -178,6 +191,11 @@ export class SqliteProductDataAdapter implements ProductDataPort {
         new Date().toISOString(),
       );
   }
+}
+
+function retentionDays(name: string, fallback: number, maximum: number) {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value >= 1 && value <= maximum ? value : fallback;
 }
 
 class IdempotencyConflict extends Error {}

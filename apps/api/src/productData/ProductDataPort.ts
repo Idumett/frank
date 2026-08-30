@@ -6,4 +6,5 @@ export interface ProductDataPort extends MemoryStore, ConversationStore {
   claimSession(userId: string, sessionId?: string): void;
   setPreferences(userId: string, sessionId: string, tts: TtsPrefs): UserPrefs;
   getPreferences(userId: string, sessionId: string): UserPrefs | null;
+  applyRetention(now?: Date): { expiredHazards: number; resolvedHazards: number; operations: number };
 }

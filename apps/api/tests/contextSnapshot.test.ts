@@ -92,4 +92,20 @@ describe('Context Snapshot V1', () => {
     invalid.location.expiresAt = new Date(now - 1).toISOString();
     expect(() => validateSnapshot(invalid, 'session-1', now)).toThrow('CONTEXT_SIGNAL_INVALID');
   });
+
+  it('downgrades an individually expired signal instead of exposing its value', () => {
+    const now = Date.now();
+    const input = snapshot(now) as any;
+    input.location.observedAt = new Date(now - 10_000).toISOString();
+    input.location.expiresAt = new Date(now - 1_000).toISOString();
+    const validated = validateSnapshot(input, 'session-1', now);
+    const selected = selectContext(validated, 'help', 'Where am I?', undefined, now)!;
+    expect(selected.facts.find((fact) => fact.key === 'location')).toEqual({ key: 'location', status: 'stale' });
+  });
+
+  it('rejects contradictory permission and sensor claims', () => {
+    const input = snapshot() as any;
+    input.permissions.location = denied('location', Date.now());
+    expect(() => validateSnapshot(input, 'session-1')).toThrow('CONTEXT_CONTRADICTORY');
+  });
 });

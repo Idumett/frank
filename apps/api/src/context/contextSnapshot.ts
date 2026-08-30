@@ -46,6 +46,19 @@ export function validateSnapshot(input: unknown, sessionId: string, now = Date.n
       }
     }
   }
+  if (
+    snapshot.permissions.location.status === 'denied' &&
+    (snapshot.location.status === 'known' || snapshot.movement.status === 'known')
+  ) throw new ContextSnapshotError('CONTEXT_CONTRADICTORY');
+  if (
+    snapshot.permissions.camera.status === 'denied' &&
+    snapshot.evidence.status === 'known'
+  ) throw new ContextSnapshotError('CONTEXT_CONTRADICTORY');
+  if (
+    snapshot.device.cameraAvailable.status === 'known' &&
+    snapshot.device.cameraAvailable.value === false &&
+    snapshot.evidence.status === 'known'
+  ) throw new ContextSnapshotError('CONTEXT_CONTRADICTORY');
   return snapshot;
 }
 
@@ -184,7 +197,8 @@ export class ContextSnapshotError extends Error {
       | 'CONTEXT_SESSION_MISMATCH'
       | 'CONTEXT_TIME_INVALID'
       | 'CONTEXT_STALE'
-      | 'CONTEXT_SIGNAL_INVALID',
+      | 'CONTEXT_SIGNAL_INVALID'
+      | 'CONTEXT_CONTRADICTORY',
   ) {
     super(code);
   }

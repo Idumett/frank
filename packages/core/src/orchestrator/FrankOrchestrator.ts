@@ -14,6 +14,7 @@ import type { TraceSource } from '../observability/types.js';
 import { CallBudget } from './guardrails/callBudget.js';
 import { applyConfidenceTone, enforceShortReply } from './guardrails/shortReply.js';
 import { withDeadline } from '../utils/deadline.js';
+import { mobilitySafetyDecision } from './mobilitySafety.js';
 
 function summarizeInput(args: { request: UserRequest; hasImage: boolean }) {
   return {
@@ -143,16 +144,16 @@ export class FrankOrchestrator {
     });
 
     try {
-      if (isRoadCrossingQuestion(request.utterance ?? request.query ?? '')) {
+      const mobilityBoundary = mobilitySafetyDecision(request.utterance ?? request.query ?? '');
+      if (mobilityBoundary) {
         const reply = AssistantReplySchema.parse({
           trace: request.trace,
-          speak:
-            "I can't determine whether a road is safe to cross. Please use your normal crossing method.",
+          speak: mobilityBoundary.speak,
           createdAt: now,
           suggestedAction: 'none',
           groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 },
         });
-        await stage('policy.road_crossing', async () => true, { blocked: true });
+        await stage(`policy.${mobilityBoundary.code}`, async () => true, { blocked: true });
         if (options.finishTrace !== false) {
           await this.deps.observability.finish(requestId, summarizeOutput(reply));
         }
@@ -472,10 +473,4 @@ function formatSelectedContext(context: UserRequest['context']) {
         `${fact.key}=${fact.status}${fact.value === undefined ? '' : `:${JSON.stringify(fact.value)}`}`,
     )
     .join(' | ');
-}
-
-function isRoadCrossingQuestion(text: string) {
-  return /\b(safe|okay|ok|clear|can i|should i|when should i)\b.{0,35}\b(cross|crossing|road|street|traffic)\b|\b(cross|crossing)\b.{0,35}\b(safe|clear|now)\b/i.test(
-    text,
-  );
 }

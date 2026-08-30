@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type { ProductEntityV1, SelectedContextV1 } from '@frank/contracts';
 import type { ProductDataPort } from '../productData/ProductDataPort.js';
+import { mobilitySafetyDecision } from '@frank/core';
 
 type Location = { latitude: number; longitude: number; accuracyMeters: number };
 type Place = Extract<ProductEntityV1, { entityType: 'known_place' }>;
@@ -24,6 +25,9 @@ export class LostAssistanceSession {
     const utterance = text.trim();
     const lower = utterance.toLowerCase();
     const location = selectedLocation(context);
+    const safety = mobilitySafetyDecision(utterance);
+    if (safety)
+      return { speak: safety.speak, action: `mobility_${safety.code}`, data: { incident: safety.code } };
 
     if (this.pending) {
       if (this.pending.expiresAt <= Date.now()) this.pending = null;
@@ -37,7 +41,7 @@ export class LostAssistanceSession {
 
     const savePlace = lower.match(/\b(?:save|remember)\s+(?:this\s+|here\s+as\s+|this\s+place\s+as\s+|place\s+as\s+)?(?:place\s+)?(?:as\s+)?([a-z][a-z0-9 '&-]{0,79})$/i);
     if (savePlace && !/\b(pothole|hazard|obstruction|roadworks|uneven)\b/i.test(lower)) {
-      if (!location) return locationUnavailable('save that place');
+      if (!location) return locationUnavailable('save that place', context);
       if (location.accuracyMeters > 100) return inaccurate(location, 'save a place');
       const name = cleanName(savePlace[1]);
       const existing = this.findPlace(name);
@@ -51,7 +55,7 @@ export class LostAssistanceSession {
 
     const hazardType = parseHazard(lower);
     if (hazardType && /\b(remember|report|save|there is|there's)\b/i.test(lower)) {
-      if (!location) return locationUnavailable('save that hazard');
+      if (!location) return locationUnavailable('save that hazard', context);
       if (location.accuracyMeters > 50) return inaccurate(location, 'save a hazard');
       const description = hazardDescription(hazardType, utterance);
       this.pending = { kind: 'save_hazard', expiresAt: Date.now() + 120_000, hazardType, description, location, capturedAt: new Date().toISOString() };
@@ -71,7 +75,7 @@ export class LostAssistanceSession {
     if (relocate) {
       const place = this.findPlace(relocate[1]);
       if (!place) return { speak: `I couldn't find a saved place called ${cleanName(relocate[1])}.`, action: 'not_found' };
-      if (!location) return locationUnavailable(`update ${place.name}`);
+      if (!location) return locationUnavailable(`update ${place.name}`, context);
       if (location.accuracyMeters > 100) return inaccurate(location, 'update a place');
       this.pending = { kind: 'relocate', expiresAt: Date.now() + 120_000, place, location, capturedAt: new Date().toISOString() };
       return { speak: `Update ${place.name} to this location?`, action: 'confirm_relocate_place' };
@@ -99,9 +103,11 @@ export class LostAssistanceSession {
     if (/\b(?:what|which|list|review|show)\b.*\b(hazards|potholes)\b/i.test(lower))
       return this.reviewHazards();
     if (/\bwhat(?:'s| is) nearby\b|\bnear me\b|\bnearby places\b/i.test(lower))
-      return this.nearby(location);
-    if (/\bwhere am i\b|\bmy location\b/i.test(lower)) return this.whereAmI(location);
-    if (/\b(?:i am|i'm|im) lost\b|\bhelp me get back\b/i.test(lower)) return this.lost(location);
+      return this.nearby(location, context);
+    if (/\bwhere am i\b|\bmy location\b/i.test(lower)) return this.whereAmI(location, context);
+    if (/\b(?:i am|i'm|im) lost\b|\bhelp me get back\b/i.test(lower)) return this.lost(location, context);
+    if (/\b(wrong way|off route|missed (?:a )?turn|route deviation|deviated)\b/i.test(lower))
+      return this.routeDeviation(location);
     return null;
   }
 
@@ -141,8 +147,9 @@ export class LostAssistanceSession {
     return response.ok ? { speak: `Saved. I'll treat the ${pending.description} as a user report for 30 days.`, action: 'hazard_saved' } : storageFailure();
   }
 
-  private whereAmI(location: Location | null) {
-    if (!location) return locationUnavailable('work out where you are');
+  private whereAmI(location: Location | null, context?: SelectedContextV1) {
+    if (!location) return locationUnavailable('work out where you are', context);
+    if (location.accuracyMeters > 200) return inaccurate(location, 'reliably work out where you are');
     const places = this.places().map((place) => ({ place, ...relative(location, place.location) })).sort(byDistance);
     const nearest = places[0];
     const hazard = this.nearHazard(location);
@@ -154,19 +161,32 @@ export class LostAssistanceSession {
     return { speak: `${position}. Location accuracy is about ${roundDistance(location.accuracyMeters)}.${hazard}`, action: 'location_assistance', data: { nearestPlaceId: nearest.place.id, distanceMeters: Math.round(nearest.distanceMeters) } };
   }
 
-  private nearby(location: Location | null) {
-    if (!location) return locationUnavailable('check nearby saved places');
+  private nearby(location: Location | null, context?: SelectedContextV1) {
+    if (!location) return locationUnavailable('check nearby saved places', context);
+    if (location.accuracyMeters > 200) return inaccurate(location, 'reliably check what is nearby');
     const nearby = this.places().map((place) => ({ place, ...relative(location, place.location) })).filter((item) => item.distanceMeters <= 1_000).sort(byDistance).slice(0, 3);
     if (!nearby.length) return { speak: `I don't have any user-confirmed places within one kilometre.${this.nearHazard(location)}`, action: 'no_nearby_places' };
     const list = nearby.map((item) => `${item.place.name}, about ${roundDistance(item.distanceMeters)} ${item.direction}`).join('; ');
     return { speak: `Nearby saved places: ${list}.${this.nearHazard(location)}`, action: 'nearby_places' };
   }
 
-  private lost(location: Location | null) {
-    if (!location) return { speak: `I can't access a current location. Pause somewhere safe and use your normal mobility or navigation method, or contact someone you trust.`, action: 'lost_location_unavailable' };
+  private lost(location: Location | null, context?: SelectedContextV1) {
+    if (!location) {
+      const issue = locationUnavailable('reliably orient you', context);
+      return { ...issue, speak: `${issue.speak} Stop where you are if you can do so safely, then use your usual mobility or navigation method, or contact someone you trust.`, action: `lost_${issue.action}` };
+    }
+    if (location.accuracyMeters > 200) return { ...inaccurate(location, 'reliably orient you'), speak: `Your location uncertainty is about ${roundDistance(location.accuracyMeters)}, so I can't reliably orient you. Stop where you are if you can do so safely, then use your usual mobility or navigation method, or contact someone you trust.`, action: 'lost_location_inaccurate' };
     const nearest = this.places().map((place) => ({ place, ...relative(location, place.location) })).sort(byDistance)[0];
-    if (!nearest) return { speak: `I have your approximate location, but no confirmed place to orient you from. Pause somewhere safe and use your normal mobility or navigation method, or contact someone you trust.${this.nearHazard(location)}`, action: 'lost_no_known_place' };
-    return { speak: `The nearest saved place is ${nearest.place.name}, about ${roundDistance(nearest.distanceMeters)} ${nearest.direction}. This is orientation only, not a route. Pause somewhere safe and use your normal mobility or navigation method to get there.${this.nearHazard(location)}`, action: 'lost_recovery' };
+    if (!nearest) return { speak: `I have your approximate location, but no confirmed place to orient you from. Stop where you are if you can do so safely, then use your normal mobility or navigation method, or contact someone you trust.${this.nearHazard(location)}`, action: 'lost_no_known_place' };
+    return { speak: `The nearest saved place is ${nearest.place.name}, about ${roundDistance(nearest.distanceMeters)} ${nearest.direction}. This is orientation only, not a route. Stop where you are if you can do so safely, then use your normal mobility or navigation method to get there.${this.nearHazard(location)}`, action: 'lost_recovery' };
+  }
+
+  private routeDeviation(location: Location | null) {
+    if (!location) return { speak: `I'm not tracking a route, so I can't tell whether you have deviated. Stop where you are if you can do so safely, then check your usual navigation method.`, action: 'route_not_tracked', data: { incident: 'route_deviation_without_location' } };
+    if (location.accuracyMeters > 200) return { speak: `I'm not tracking a route, and your current location uncertainty is about ${roundDistance(location.accuracyMeters)}. Stop where you are if you can do so safely, then check your usual navigation method.`, action: 'route_not_tracked', data: { incident: 'route_deviation_poor_gps' } };
+    const nearest = this.places().map((place) => ({ place, ...relative(location, place.location) })).sort(byDistance)[0];
+    const reference = nearest ? ` The nearest saved reference is ${nearest.place.name}, about ${roundDistance(nearest.distanceMeters)} ${nearest.direction}.` : '';
+    return { speak: `I'm not tracking a route, so I can't tell whether you have deviated.${reference} Use your usual navigation method to check the route.`, action: 'route_not_tracked', data: { incident: 'route_deviation' } };
   }
 
   private reviewPlaces() {
@@ -209,6 +229,12 @@ function parseHazard(text: string): Hazard['hazardType'] | null { if (/\bpothole
 function hazardDescription(type: Hazard['hazardType'], text: string) { const base = type.replace('_', ' '); const match = text.match(/\b(?:pothole|uneven surface|obstruction|roadworks|hazard)\b.{0,80}/i); return cleanName(match?.[0] ?? base).slice(0, 300).toLowerCase(); }
 function article(value: string) { return /^[aeiou]/i.test(value) ? `an ${value}` : `a ${value}`; }
 function provenance(requestId: string, capturedAt: string) { return { source: 'frank_server' as const, requestId, capturedAt }; }
-function locationUnavailable(action: string): LostAssistanceResult { return { speak: `I can't access a current location to ${action}. Frank still works without location; you can enable location permission when you want this feature.`, action: 'location_unavailable' }; }
-function inaccurate(location: Location, action: string): LostAssistanceResult { return { speak: `Location accuracy is about ${roundDistance(location.accuracyMeters)}, which isn't precise enough to ${action} safely. Try again where the phone has a clearer location signal.`, action: 'location_inaccurate' }; }
+function locationUnavailable(action: string, context?: SelectedContextV1): LostAssistanceResult {
+  const status = context?.facts.find((item) => item.key === 'location')?.status ?? 'unknown';
+  if (status === 'denied') return { speak: `Location permission is off, so I can't ${action}. Frank still works without it; enable location only when you want this feature.`, action: 'location_denied', data: { incident: 'context_location_denied' } };
+  if (status === 'stale') return { speak: `Your last location is too old to ${action}. Try again after the phone gets a fresh location.`, action: 'location_stale', data: { incident: 'context_location_stale' } };
+  if (status === 'conflicting') return { speak: `The available location signals disagree, so I can't ${action} reliably. Try again where the phone has a clearer signal.`, action: 'location_conflicting', data: { incident: 'context_location_conflicting' } };
+  return { speak: `I don't have a current location to ${action}. Frank still works without location; you can try again when location is available.`, action: 'location_unavailable', data: { incident: 'context_location_missing' } };
+}
+function inaccurate(location: Location, action: string): LostAssistanceResult { return { speak: `Location uncertainty is about ${roundDistance(location.accuracyMeters)}, which is too broad to ${action}. Try again where the phone has a clearer location signal.`, action: 'location_inaccurate', data: { incident: 'context_location_inaccurate', accuracyBand: location.accuracyMeters > 500 ? 'very_poor' : 'poor' } }; }
 function storageFailure(): LostAssistanceResult { return { speak: `I couldn't save that change. Please try again.`, action: 'storage_error' }; }

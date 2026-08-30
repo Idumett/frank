@@ -230,6 +230,22 @@ export class SqliteObservabilityStore implements ObservabilityStore {
     };
   }
 
+  getContextIncidents(filters: TraceFilters = {}) {
+    const traces = this.getRecent({ ...filters, limit: Math.min(filters.limit ?? 200, 200) });
+    const incidents: Array<{ requestId: string; startedAt: string; code: string }> = [];
+    for (const trace of traces) {
+      for (const stage of trace.stages) {
+        const data = stage.data as { incident?: unknown } | undefined;
+        const policyCode = stage.name.startsWith('policy.') ? stage.name.slice('policy.'.length) : undefined;
+        const code = typeof data?.incident === 'string' ? data.incident : policyCode;
+        if (code && ['road_crossing', 'movement_safety', 'turn_by_turn', 'context_location_denied', 'context_location_stale', 'context_location_conflicting', 'context_location_missing', 'context_location_inaccurate', 'route_deviation', 'route_deviation_without_location', 'route_deviation_poor_gps'].includes(code))
+          incidents.push({ requestId: trace.requestId, startedAt: trace.startedAt, code });
+      }
+    }
+    const counts = Object.fromEntries([...new Set(incidents.map((item) => item.code))].sort().map((code) => [code, incidents.filter((item) => item.code === code).length]));
+    return { total: incidents.length, counts, recent: incidents.slice(0, 50) };
+  }
+
   getByRequestId(requestId: string): RequestTraceRecord | null {
     const row = this.db
       .prepare(

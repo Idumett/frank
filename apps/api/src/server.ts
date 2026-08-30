@@ -132,9 +132,13 @@ app.addHook('onSend', async (req, reply) => {
 app.get('/health', async () => ({ ok: true }));
 
 const claim = (userId: string, sessionId?: string) => productData.claimSession(userId, sessionId);
-applyRetention(sqlite.rawDb, TTS_CACHE_DIR);
+const runRetention = () => {
+  applyRetention(sqlite.rawDb, TTS_CACHE_DIR);
+  productData.applyRetention();
+};
+runRetention();
 const retentionTimer = setInterval(
-  () => applyRetention(sqlite.rawDb, TTS_CACHE_DIR),
+  runRetention,
   24 * 60 * 60 * 1000,
 );
 retentionTimer.unref();
