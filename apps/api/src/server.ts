@@ -70,7 +70,7 @@ const streamRequests = new RateLimiter(Number(process.env.STREAM_RATE_LIMIT ?? 2
 
 app.addHook('onRequest', async (req, reply) => {
   req.userId = 'legacy';
-  if (!tokens || req.url === '/health') return;
+  if (!tokens || req.url === '/health' || req.url === '/privacy') return;
   const diagnostics = req.url.startsWith('/v1/diag');
   const auth = tokens.authenticate(req.headers.authorization, diagnostics);
   if (!auth) {
@@ -130,6 +130,10 @@ app.addHook('onSend', async (req, reply) => {
 });
 
 app.get('/health', async () => ({ ok: true }));
+
+app.get('/privacy', async (_req, reply) => reply
+  .type('text/html; charset=utf-8')
+  .send(`<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Frank privacy notice</title><style>body{font:18px/1.55 system-ui;max-width:48rem;margin:auto;padding:2rem;color:#172033}h1,h2{line-height:1.2}</style><main><h1>Frank privacy notice</h1><p>Last updated 4 September 2026.</p><p>Frank is an accessibility assistant in private testing. It processes voice recordings and, only when relevant, camera images and device context to answer a request. Location is optional and is used for current context and user-confirmed places or hazards.</p><h2>Storage</h2><p>Temporary audio and camera evidence are processed for the request and are not retained as ordinary history. Conversation context is retained for one day, diagnostic traces for 14 days, cached speech for seven days, and inactive sessions for 30 days. User-confirmed memories, places and hazards remain until they expire or the user deletes them. Raw location history is not stored.</p><h2>Providers</h2><p>Requests may be processed by Google Cloud Speech-to-Text, Vision, Text-to-Speech and Gemini. Operational data is stored in the Frank Google Cloud project.</p><h2>Control and safety</h2><p>Camera and location access are optional and can be revoked in Android settings. Frank is not a navigation, emergency or road-crossing service. Private testers can request access to, correction of, or deletion of their test data through the testing contact shown on the Google Play listing.</p></main></html>`));
 
 const claim = (userId: string, sessionId?: string) => productData.claimSession(userId, sessionId);
 const runRetention = () => {
