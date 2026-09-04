@@ -8,6 +8,7 @@ ln -sfn /etc/frank/read-secrets.sh /usr/local/sbin/frank-refresh-secrets
 install -m 700 "$repo/deploy/gcp/update.sh" /usr/local/sbin/frank-update
 install -m 700 "$repo/deploy/gcp/rollback.sh" /usr/local/sbin/frank-rollback
 install -m 700 "$repo/deploy/gcp/backup.sh" /usr/local/sbin/frank-backup
+install -m 700 "$repo/deploy/gcp/restore.sh" /usr/local/sbin/frank-restore
 install -m 700 "$repo/deploy/gcp/healthcheck.sh" /usr/local/sbin/frank-healthcheck
 cat > /etc/systemd/system/frank-backup.service <<UNIT
 [Unit]

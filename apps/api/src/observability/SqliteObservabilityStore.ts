@@ -246,6 +246,38 @@ export class SqliteObservabilityStore implements ObservabilityStore {
     return { total: incidents.length, counts, recent: incidents.slice(0, 50) };
   }
 
+  getProviderUsage(filters: TraceFilters = {}) {
+    const traces = this.getRecent({ ...filters, limit: Math.min(filters.limit ?? 200, 200) });
+    const usage = traces.flatMap((trace) => trace.stages)
+      .filter((stage) => stage.name === 'llm.usage')
+      .map((stage) => stage.data as Record<string, unknown> | undefined);
+    const sum = (key: string) => usage.reduce(
+      (total, item) => total + (typeof item?.[key] === 'number' ? item[key] as number : 0),
+      0,
+    );
+    const promptTokens = sum('promptTokens');
+    const outputTokens = sum('outputTokens');
+    const cachedTokens = sum('cachedTokens');
+    const promptUsdPerMillion = Number(process.env.GEMINI_INPUT_USD_PER_MILLION ?? 0);
+    const outputUsdPerMillion = Number(process.env.GEMINI_OUTPUT_USD_PER_MILLION ?? 0);
+    return {
+      window: { traces: traces.length, llmCalls: usage.length },
+      tokens: {
+        prompt: promptTokens,
+        output: outputTokens,
+        thought: sum('thoughtTokens'),
+        total: sum('totalTokens'),
+        cached: cachedTokens,
+      },
+      cacheHits: usage.filter((item) => item?.cacheHit === true).length,
+      estimatedUsd: Math.round((
+        (Math.max(0, promptTokens - cachedTokens) * promptUsdPerMillion) +
+        (outputTokens * outputUsdPerMillion)
+      ) / 1_000_000 * 1_000_000) / 1_000_000,
+      pricing: { promptUsdPerMillion, outputUsdPerMillion },
+    };
+  }
+
   getByRequestId(requestId: string): RequestTraceRecord | null {
     const row = this.db
       .prepare(

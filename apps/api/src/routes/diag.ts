@@ -23,6 +23,11 @@ export async function diagRoutes(
     return { filters, incidents: deps.observability.getContextIncidents(filters) };
   });
 
+  app.get('/v1/diag/provider-usage', async (req) => {
+    const filters = readFilters(req.query);
+    return { filters, usage: deps.observability.getProviderUsage(filters) };
+  });
+
   app.get('/v1/diag/traces/:requestId', async (req, reply) => {
     const params = req.params as { requestId: string };
     const trace = deps.observability.getByRequestId(params.requestId);

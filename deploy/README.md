@@ -1,6 +1,6 @@
 # Demo deployment
 
-Frank runs on one Compute Engine VM behind Caddy at `35.242.143.73.sslip.io`. SQLite and the TTS cache live in `/var/lib/frank`. Gemini and the hashed product/diagnostics token registry come from Secret Manager through the VM's service account.
+Frank runs as **staging** on one Compute Engine VM behind Caddy at `35.242.143.73.sslip.io`. SQLite and the TTS cache live in `/var/lib/frank`. Gemini and the hashed product/diagnostics token registry come from Secret Manager through the VM's service account. This remains staging until the Android identity model, production domain, privacy policy and Play production review are complete.
 
 ## Update and rollback
 
@@ -19,8 +19,21 @@ sudo frank-refresh-secrets
 ```sh
 systemctl list-timers 'frank-*'
 sudo frank-backup
+sudo frank-restore latest --verify-only
 ls -lh /var/backups/frank
 ```
+
+Backups are integrity checked, kept locally for 14 days and copied to the private
+Cloud Storage bucket in `BACKUP_BUCKET`. `frank-restore` verifies into a temporary
+database by default. An intentional replacement requires `--replace` and takes a
+pre-restore copy first.
+
+## Lifetime and operating model
+
+The VM has no application expiry. Extending the demo means keeping billing enabled,
+the reserved address, Secret Manager entries, backup bucket and monitoring policy.
+No architecture migration is required. Review the monthly budget and API quotas
+before inviting more testers.
 
 ## Android demo build
 

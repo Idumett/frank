@@ -100,4 +100,18 @@ describe('request diagnostics', () => {
     expect(JSON.stringify(store.getContextIncidents())).not.toContain('latitude');
     db.close();
   });
+
+  it('totals provider tokens and cache hits for cost review', async () => {
+    const { db, store } = makeStore();
+    await store.start({ requestId: 'req-cost123', source: 'device_stream', startedAt: '2026-09-04T10:00:00.000Z', stages: [] });
+    await store.addStage('req-cost123', {
+      name: 'llm.usage', startedAt: '2026-09-04T10:00:01.000Z', durationMs: 1, ok: true,
+      data: { promptTokens: 800, outputTokens: 100, totalTokens: 900, cachedTokens: 300, cacheHit: true },
+    });
+    const usage = store.getProviderUsage();
+    expect(usage.window.llmCalls).toBe(1);
+    expect(usage.tokens).toMatchObject({ prompt: 800, output: 100, total: 900, cached: 300 });
+    expect(usage.cacheHits).toBe(1);
+    db.close();
+  });
 });
