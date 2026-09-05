@@ -6,6 +6,7 @@ export interface LlmProvider {
     userUtterance?: string;
     perception: PerceptionResult;
     memoryHits: string[];
+    context?: string;
     now: string;
   }): Promise<AssistantReply>;
 }

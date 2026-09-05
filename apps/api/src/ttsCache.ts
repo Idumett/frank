@@ -2,10 +2,10 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const CACHE_DIR = process.env.TTS_CACHE_DIR ?? './data/tts-cache';
+export const TTS_CACHE_DIR = process.env.TTS_CACHE_DIR ?? './data/tts-cache';
 
 export function ensureTtsCacheDir() {
-  fs.mkdirSync(CACHE_DIR, { recursive: true });
+  fs.mkdirSync(TTS_CACHE_DIR, { recursive: true });
 }
 
 export function ttsCacheKey(args: { text: string; voice?: string; languageCode?: string }) {
@@ -18,7 +18,7 @@ export function ttsCacheKey(args: { text: string; voice?: string; languageCode?:
 }
 
 export function ttsCachePath(key: string) {
-  return path.join(CACHE_DIR, `${key}.mp3`);
+  return path.join(TTS_CACHE_DIR, `${key}.mp3`);
 }
 
 export function readCachedTts(key: string): Buffer | null {

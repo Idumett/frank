@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { IsoDateTimeSchema, TraceSchema } from './common.js';
+import { SelectedContextV1Schema } from './contextSnapshotV1.js';
 
 export const IntentSchema = z.enum([
   'read_text', // OCR-focused
@@ -25,10 +26,20 @@ export const UserRequestSchema = z.object({
    */
   hasImage: z.boolean().default(true),
 
+  imageEvidence: z
+    .object({
+      frameId: z.string().min(8),
+      capturedAt: IsoDateTimeSchema,
+      ageMs: z.number().int().min(0),
+      clientQuality: z.enum(['unknown', 'good', 'poor']).default('unknown'),
+    })
+    .optional(),
+
   /** Optional query for recall/search intent */
   query: z.string().optional(),
 
   requestedAt: IsoDateTimeSchema,
+  context: SelectedContextV1Schema.optional(),
 });
 
 export type UserRequest = z.infer<typeof UserRequestSchema>;

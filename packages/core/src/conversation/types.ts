@@ -1,4 +1,5 @@
 export type ConversationTurn = {
+  userId: string;
   sessionId: string;
   role: 'user' | 'assistant';
   text: string;
@@ -6,7 +7,7 @@ export type ConversationTurn = {
 };
 
 export interface ConversationStore {
-  getRecent(sessionId: string, limit: number): Promise<ConversationTurn[]>;
+  getRecent(userId: string, sessionId: string, limit: number): Promise<ConversationTurn[]>;
   addTurn(turn: ConversationTurn): Promise<void>;
-  clearSession?(sessionId: string): Promise<void>;
+  clearSession?(userId: string, sessionId: string): Promise<void>;
 }

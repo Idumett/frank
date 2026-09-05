@@ -8,10 +8,18 @@ export type TraceStage = {
   error?: string;
 };
 
+export type TraceSource =
+  | 'analyze'
+  | 'device_frame'
+  | 'device_stream'
+  | 'stt'
+  | 'tts';
+
 export type RequestTraceRecord = {
+  userId?: string;
   requestId: string;
   sessionId?: string;
-  source?: 'analyze' | 'device_frame' | 'device_stream';
+  source?: TraceSource;
   startedAt: string;
   endedAt?: string;
   totalMs?: number;
@@ -22,7 +30,7 @@ export type RequestTraceRecord = {
 };
 
 export type TraceFilters = {
-  source?: RequestTraceRecord['source'];
+  source?: TraceSource;
   sessionId?: string;
   success?: boolean;
   from?: string;

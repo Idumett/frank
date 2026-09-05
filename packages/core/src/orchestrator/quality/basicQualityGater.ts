@@ -15,6 +15,10 @@ export class BasicQualityGater implements QualityGater {
   async assess(imageBytes: Buffer): Promise<QualityReport> {
     const notes: string[] = [];
 
+    if (imageBytes.length === 0) {
+      return { imageQuality: 'poor', notes: ['empty_image'] };
+    }
+
     if (imageBytes.length < 15_000) notes.push('very_small_image');
     if (imageBytes.length > 8_000_000) notes.push('very_large_image');
 

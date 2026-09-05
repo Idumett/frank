@@ -14,6 +14,9 @@ export class BasicPolicyEngine implements PolicyEngine {
     const hasAnyVisionSignal = ocrText.length > 0 || hasLabels;
 
     const isPoor = args.quality.imageQuality === 'poor';
+    const needsVisualEvidence = ['read_text', 'describe_scene', 'remember_this'].includes(
+      args.request.intent,
+    );
 
     /**
      * JARVIS MODE:
@@ -22,6 +25,24 @@ export class BasicPolicyEngine implements PolicyEngine {
      */
     if (isPoor) {
       reasons.push(...args.quality.notes);
+
+      if (needsVisualEvidence) {
+        return PolicyDecisionSchema.parse({
+          trace: args.request.trace,
+          nextAction: 'request_recapture',
+          confidence: 'low',
+          reasons: [...reasons, 'visual_intent_requires_clear_evidence'],
+          recapturePrompt:
+            args.request.intent === 'read_text'
+              ? 'I could not read that clearly. Point the camera straight at the text, move closer, and hold still.'
+              : 'I cannot make that out clearly. Point the camera at it, hold still, and try again.',
+          estimatedCostUnits: 1,
+          allowVisionCalls: true,
+          allowLlmCall: false,
+          shouldStore: false,
+          requireUserConfirmToStore: true,
+        });
+      }
 
       if (hasSpecificQuestion) {
         reasons.push('poor_image_quality_but_user_asked_specific_question');

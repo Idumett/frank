@@ -8,11 +8,14 @@ export class SqliteObservabilityStore implements ObservabilityStore {
   constructor(private db: DbLike) {}
 
   async start(record: RequestTraceRecord): Promise<void> {
+    const owner = this.db.prepare('SELECT user_id FROM request_traces WHERE request_id = ?').get(record.requestId);
+    if (owner && owner.user_id !== (record.userId ?? 'legacy')) throw new Error('Request ID already belongs to another user');
     this.db
       .prepare(
         `
           INSERT OR REPLACE INTO request_traces (
             request_id,
+            user_id,
             session_id,
             source,
             started_at,
@@ -22,11 +25,38 @@ export class SqliteObservabilityStore implements ObservabilityStore {
             output_json,
             error,
             stages_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(request_id) DO UPDATE SET
+            user_id = excluded.user_id,
+            session_id = CASE
+              WHEN request_traces.ended_at IS NULL THEN COALESCE(request_traces.session_id, excluded.session_id)
+              ELSE excluded.session_id
+            END,
+            source = CASE
+              WHEN request_traces.ended_at IS NULL THEN COALESCE(request_traces.source, excluded.source)
+              ELSE excluded.source
+            END,
+            started_at = CASE
+              WHEN request_traces.ended_at IS NULL THEN request_traces.started_at
+              ELSE excluded.started_at
+            END,
+            ended_at = CASE WHEN request_traces.ended_at IS NULL THEN request_traces.ended_at ELSE NULL END,
+            total_ms = CASE WHEN request_traces.ended_at IS NULL THEN request_traces.total_ms ELSE NULL END,
+            input_json = CASE
+              WHEN request_traces.ended_at IS NULL THEN COALESCE(request_traces.input_json, excluded.input_json)
+              ELSE excluded.input_json
+            END,
+            output_json = CASE WHEN request_traces.ended_at IS NULL THEN request_traces.output_json ELSE NULL END,
+            error = CASE WHEN request_traces.ended_at IS NULL THEN request_traces.error ELSE NULL END,
+            stages_json = CASE
+              WHEN request_traces.ended_at IS NULL THEN request_traces.stages_json
+              ELSE excluded.stages_json
+            END
         `,
       )
       .run(
         record.requestId,
+        record.userId ?? 'legacy',
         record.sessionId ?? null,
         record.source ?? null,
         record.startedAt,
@@ -40,29 +70,19 @@ export class SqliteObservabilityStore implements ObservabilityStore {
   }
 
   async addStage(requestId: string, stage: TraceStage): Promise<void> {
-    const row = this.db
-      .prepare(
-        `
-          SELECT stages_json
-          FROM request_traces
-          WHERE request_id = ?
-        `,
-      )
-      .get(requestId);
-
-    const stages: TraceStage[] = row?.stages_json ? safeParse(row.stages_json, []) : [];
-
-    stages.push(stage);
-
     this.db
       .prepare(
         `
           UPDATE request_traces
-          SET stages_json = ?
+          SET stages_json = json_insert(
+            COALESCE(stages_json, '[]'),
+            '$[#]',
+            json(?)
+          )
           WHERE request_id = ?
         `,
       )
-      .run(safeJson(stages), requestId);
+      .run(safeJson(stage), requestId);
   }
 
   async finish(requestId: string, output: unknown): Promise<void> {
@@ -115,7 +135,7 @@ export class SqliteObservabilityStore implements ObservabilityStore {
       .run(endedAt, totalMs, error, requestId);
   }
 
-  getRecent(filters: TraceFilters = {}) {
+  getRecent(filters: TraceFilters = {}): RequestTraceRecord[] {
     const conditions: string[] = [];
     const values: unknown[] = [];
 
@@ -162,7 +182,103 @@ export class SqliteObservabilityStore implements ObservabilityStore {
     return rows.map(rowToTrace);
   }
 
-  getByRequestId(requestId: string) {
+  getSummary(filters: TraceFilters = {}) {
+    const traces = this.getRecent({ ...filters, limit: Math.min(filters.limit ?? 200, 200) });
+    const stageMap = new Map<string, { durations: number[]; failures: number }>();
+
+    for (const trace of traces) {
+      for (const stage of trace.stages) {
+        const current = stageMap.get(stage.name) ?? { durations: [], failures: 0 };
+        if (typeof stage.durationMs === 'number') current.durations.push(stage.durationMs);
+        if (!stage.ok) current.failures += 1;
+        stageMap.set(stage.name, current);
+      }
+    }
+
+    const stages = [...stageMap.entries()].map(([name, value]) => ({
+      name,
+      calls: value.durations.length,
+      failures: value.failures,
+      minMs: percentile(value.durations, 0),
+      avgMs: average(value.durations),
+      p50Ms: percentile(value.durations, 0.5),
+      p95Ms: percentile(value.durations, 0.95),
+      maxMs: percentile(value.durations, 1),
+    })).sort((a, b) => b.avgMs - a.avgMs);
+
+    const completed = traces.filter((trace) => trace.endedAt);
+    const failed = traces.filter((trace) => trace.error);
+    const totals = completed.flatMap((trace) =>
+      typeof trace.totalMs === 'number' ? [trace.totalMs] : [],
+    );
+
+    return {
+      traces: traces.length,
+      completed: completed.length,
+      inFlight: traces.length - completed.length,
+      failures: failed.length,
+      successRate: completed.length === 0
+        ? null
+        : Math.round(((completed.length - failed.length) / completed.length) * 1000) / 10,
+      totalMs: {
+        avg: average(totals),
+        p50: percentile(totals, 0.5),
+        p95: percentile(totals, 0.95),
+        max: percentile(totals, 1),
+      },
+      stages,
+    };
+  }
+
+  getContextIncidents(filters: TraceFilters = {}) {
+    const traces = this.getRecent({ ...filters, limit: Math.min(filters.limit ?? 200, 200) });
+    const incidents: Array<{ requestId: string; startedAt: string; code: string }> = [];
+    for (const trace of traces) {
+      for (const stage of trace.stages) {
+        const data = stage.data as { incident?: unknown } | undefined;
+        const policyCode = stage.name.startsWith('policy.') ? stage.name.slice('policy.'.length) : undefined;
+        const code = typeof data?.incident === 'string' ? data.incident : policyCode;
+        if (code && ['road_crossing', 'movement_safety', 'turn_by_turn', 'context_location_denied', 'context_location_stale', 'context_location_conflicting', 'context_location_missing', 'context_location_inaccurate', 'route_deviation', 'route_deviation_without_location', 'route_deviation_poor_gps'].includes(code))
+          incidents.push({ requestId: trace.requestId, startedAt: trace.startedAt, code });
+      }
+    }
+    const counts = Object.fromEntries([...new Set(incidents.map((item) => item.code))].sort().map((code) => [code, incidents.filter((item) => item.code === code).length]));
+    return { total: incidents.length, counts, recent: incidents.slice(0, 50) };
+  }
+
+  getProviderUsage(filters: TraceFilters = {}) {
+    const traces = this.getRecent({ ...filters, limit: Math.min(filters.limit ?? 200, 200) });
+    const usage = traces.flatMap((trace) => trace.stages)
+      .filter((stage) => stage.name === 'llm.usage')
+      .map((stage) => stage.data as Record<string, unknown> | undefined);
+    const sum = (key: string) => usage.reduce(
+      (total, item) => total + (typeof item?.[key] === 'number' ? item[key] as number : 0),
+      0,
+    );
+    const promptTokens = sum('promptTokens');
+    const outputTokens = sum('outputTokens');
+    const cachedTokens = sum('cachedTokens');
+    const promptUsdPerMillion = Number(process.env.GEMINI_INPUT_USD_PER_MILLION ?? 0);
+    const outputUsdPerMillion = Number(process.env.GEMINI_OUTPUT_USD_PER_MILLION ?? 0);
+    return {
+      window: { traces: traces.length, llmCalls: usage.length },
+      tokens: {
+        prompt: promptTokens,
+        output: outputTokens,
+        thought: sum('thoughtTokens'),
+        total: sum('totalTokens'),
+        cached: cachedTokens,
+      },
+      cacheHits: usage.filter((item) => item?.cacheHit === true).length,
+      estimatedUsd: Math.round((
+        (Math.max(0, promptTokens - cachedTokens) * promptUsdPerMillion) +
+        (outputTokens * outputUsdPerMillion)
+      ) / 1_000_000 * 1_000_000) / 1_000_000,
+      pricing: { promptUsdPerMillion, outputUsdPerMillion },
+    };
+  }
+
+  getByRequestId(requestId: string): RequestTraceRecord | null {
     const row = this.db
       .prepare(
         `
@@ -176,7 +292,7 @@ export class SqliteObservabilityStore implements ObservabilityStore {
     return row ? rowToTrace(row) : null;
   }
 
-  getBySessionId(sessionId: string, limit = 30) {
+  getBySessionId(sessionId: string, limit = 30): RequestTraceRecord[] {
     const rows = this.db
       .prepare(
         `
@@ -193,9 +309,10 @@ export class SqliteObservabilityStore implements ObservabilityStore {
   }
 }
 
-function rowToTrace(row: any) {
+function rowToTrace(row: any): RequestTraceRecord {
   return {
     requestId: row.request_id,
+    userId: row.user_id,
     sessionId: row.session_id ?? undefined,
     source: row.source ?? undefined,
     startedAt: row.started_at,
@@ -220,4 +337,15 @@ function safeParse<T>(value: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function average(values: number[]) {
+  if (values.length === 0) return 0;
+  return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
+function percentile(values: number[], ratio: number) {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(Math.floor(sorted.length * ratio), sorted.length - 1)];
 }

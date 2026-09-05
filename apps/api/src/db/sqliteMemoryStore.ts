@@ -11,19 +11,26 @@ type SearchOptions = {
 
 export class SqliteMemoryStore {
   private db: Database.Database;
+  private ownsConnection: boolean;
 
-  constructor() {
-    const dir = path.dirname(DB_PATH);
+  constructor(dbPath: string | Database.Database = DB_PATH) {
+    if (typeof dbPath !== 'string') {
+      this.db = dbPath;
+      this.ownsConnection = false;
+      return;
+    }
+    const dir = path.dirname(dbPath);
     fs.mkdirSync(dir, { recursive: true });
 
-    this.db = new Database(DB_PATH);
+    this.db = new Database(dbPath);
+    this.ownsConnection = true;
 
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
   }
 
   close() {
-    this.db.close();
+    if (this.ownsConnection) this.db.close();
   }
 
   //the any isnt recommended.
@@ -31,16 +38,16 @@ export class SqliteMemoryStore {
     return this.db;
   }
 
-  add(item: MemoryItem) {
+  add(userId: string, item: MemoryItem) {
     const validated = MemoryItemSchema.parse(item);
 
     const stmt = this.db.prepare(`
       INSERT INTO memory_items (
         id, type, title, content, tags_json, created_at, media_ref, embedding_ref,
-        request_id, session_id
+        request_id, session_id, user_id
       ) VALUES (
         @id, @type, @title, @content, @tags_json, @created_at, @media_ref, @embedding_ref,
-        @request_id, @session_id
+        @request_id, @session_id, @user_id
       )
     `);
 
@@ -55,22 +62,24 @@ export class SqliteMemoryStore {
       embedding_ref: validated.embeddingRef ?? null,
       request_id: validated.trace?.requestId ?? null,
       session_id: validated.trace?.sessionId ?? null,
+      user_id: userId,
     });
   }
 
-  recent(limit: number): Promise<MemoryItem[]> {
+  recent(userId: string, limit: number): Promise<MemoryItem[]> {
     const stmt = this.db.prepare(`
       SELECT *
       FROM memory_items
+      WHERE user_id = ?
       ORDER BY created_at DESC
       LIMIT ?
     `);
 
-    const rows = stmt.all(limit);
+    const rows = stmt.all(userId, limit);
     return Promise.resolve(rows.map(rowToMemoryItem));
   }
 
-  search(query: string, opts: SearchOptions): Promise<MemoryItem[]> {
+  search(userId: string, query: string, opts: SearchOptions): Promise<MemoryItem[]> {
     const q = query.trim().toLowerCase();
     if (!q) return Promise.resolve([]);
 
@@ -127,30 +136,30 @@ export class SqliteMemoryStore {
     const stmt = this.db.prepare(`
       SELECT *
       FROM memory_items
-      WHERE (${whereParts.join(' OR ')})
+      WHERE user_id = ? AND (${whereParts.join(' OR ')})
       ORDER BY created_at DESC
       LIMIT ?
     `);
 
-    const rows = stmt.all(...params, opts.limit);
+    const rows = stmt.all(userId, ...params, opts.limit);
     return Promise.resolve(rows.map(rowToMemoryItem));
   }
 
-  delete(ids: string[]): Promise<number> {
+  delete(userId: string, ids: string[]): Promise<number> {
     if (ids.length === 0) return Promise.resolve(0);
 
     const stmt = this.db.prepare(`
       DELETE FROM memory_items
-      WHERE id = ?
+      WHERE id = ? AND user_id = ?
     `);
 
     const tx = this.db.transaction((toDelete: string[]) => {
       let deleted = 0;
       for (const id of toDelete) {
-        const res = stmt.run(id);
+        const res = stmt.run(id, userId);
         deleted += res.changes;
       }
-      return Promise.resolve(deleted);
+      return deleted;
     });
 
     return Promise.resolve(tx(ids));

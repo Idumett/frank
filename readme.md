@@ -1,418 +1,176 @@
-# Frank — System Overview & API Map
+# Frank Server
 
-**As of:** **2026-08-03**
+Frank is an AI accessibility assistant for blind and low-vision users. The server
+turns speech, deliberately selected camera evidence, short-lived device context,
+conversation history and user-owned memories into a concise spoken response.
 
-Frank is a **personal visual reasoning assistant** designed to help blind and visually impaired users by combining computer vision, language models, memory, conversation context and natural voice interaction.
+## Current position
 
-Frank is intentionally built as a **provider-agnostic reasoning engine** with **multiple client adapters** (Android, Raspberry Pi and future devices) that all route into the same core logic.
+Frank V1 is running as a staging service at
+`https://35.242.143.73.sslip.io`. The Android client uses its authenticated HTTPS
+and WebSocket APIs. The current release includes:
 
-This document describes the current architecture, available APIs and how the system is organised.
+- speech-to-text, Gemini reasoning and text-to-speech;
+- deliberate camera evidence with freshness, quality and frame identity checks;
+- short-term conversation and owner-scoped long-term memory;
+- Context Snapshot for time, permissions, app state, movement and foreground location;
+- user-confirmed known places, approximate orientation and remembered hazards;
+- deterministic mobility and road-crossing safety boundaries;
+- typed, versioned product-data contracts with a persistent local adapter and
+  Chivora-compatible fixtures;
+- request tracing, incident diagnostics, provider usage and latency reporting;
+- authenticated product and diagnostics boundaries, retention controls, rate
+  limits and bounded provider calls; and
+- staged deployment, rollback, health monitoring and verified off-VM backups.
 
----
+V1 is a working private-test release. It is not presented as dependable navigation,
+obstacle avoidance or a road-crossing system. Lost Assistance gives conservative
+orientation using fresh, sufficiently accurate context and the user's confirmed
+places. Frank does not collect route history or request background location.
 
-# 1. High-level architecture
+The remaining product work is physical testing with blind and low-vision users,
+production identity and account recovery, final Play declarations and review,
+provider tuning based on real traces, and offline support where it is useful.
 
-```
-        Android App
-        Raspberry Pi
-      Future Wearables
-             │
-             ▼
-     HTTP / WebSocket API
-             │
-             ▼
-      Frank Orchestrator
-             │
- ┌───────────┼────────────┐
- ▼           ▼            ▼
-Vision     Memory     Conversation
-             │
-             ▼
-        LLM Reasoning
-             │
-             ▼
-        Assistant Reply
-```
+## Architecture
 
-### Design principle
-
-> **Frank has one brain.**
-> Every client talks to the same reasoning engine.
-
-The Android app, Raspberry Pi and future devices should behave identically because none of them contain assistant logic.
-
----
-
-# 2. Frank Core
-
-**Location:** `packages/core`
-
-The orchestrator is the single entry point for intelligence.
-
-```ts
-handleUserRequest(
-    request: UserRequest,
-    imageBytes?: Buffer
-): Promise<AssistantReply>
+```text
+Android / device clients
+        |
+        | HTTPS + WebSocket, authenticated and versioned
+        v
+Frank API adapters
+        |
+        v
+Frank orchestrator
+  |-- deterministic policy and context selection
+  |-- conversation, memory and product data
+  |-- image quality, OCR and labels when evidence is needed
+  |-- Gemini response generation
+  `-- speech synthesis
+        |
+        v
+Owner-scoped SQLite today / Chivora adapter later
 ```
 
-The orchestrator currently performs:
+`packages/core` owns orchestration and policy. `packages/contracts` contains the
+internal and product-data contracts, `packages/protocol` defines client transport,
+and `packages/providers` isolates Gemini and Google Cloud speech and vision. The
+API in `apps/api` remains a thin adapter around those boundaries.
 
-* Image quality assessment
-* OCR
-* Object / label detection
-* Memory retrieval
-* Conversation history retrieval
-* Policy evaluation
-* Grounded LLM reasoning
-* Conversation storage
-* Optional long-term memory storage
-* Structured observability logging
-* Final response generation
+Stable prompt instructions are kept ahead of changing turn context. Conversation,
+memory and evidence are bounded, token and cache metadata are recorded, and the
+uncached Gemini path remains available. Camera analysis only runs for intents that
+need visual evidence; a previous frame must never be represented as a current view.
 
-The core intentionally contains no provider-specific code.
+## Context and safety
 
----
+Context Snapshot distinguishes known, unknown, denied, stale and conflicting
+signals, with provenance and expiry. The server selects only the context relevant
+to the current turn. Device context, memories, OCR text, place names and external
+provider output are treated as untrusted data and cannot override assistant policy.
 
-# 3. Providers
+Road-crossing decisions, movement-safety questions and requests for turn-by-turn
+navigation are intercepted in code before Gemini. Poor or stale GPS produces an
+explicit limitation instead of false precision. Places and hazards require user
+confirmation, remain owner-scoped and can be reviewed, corrected or deleted.
 
-**Location:** `packages/providers`
+See [Context Snapshot release gate](docs/context-snapshot-release.md),
+[Lost Assistance](docs/lost-assistance-v1.md) and
+[camera evidence](docs/camera-evidence.md).
 
-Current providers:
+## API surface
 
-### Vision
-
-* Google Cloud Vision OCR
-* Google Cloud Vision Labels
-
-### Language
-
-* Google Gemini
-
-### Speech
-
-* Google Speech-to-Text
-* Google Text-to-Speech
-
-Providers are interchangeable.
-
-The core only consumes Frank contracts.
-
----
-
-# 4. Internal contracts
-
-**Location:** `packages/contracts`
-
-Important contracts include:
-
-* UserRequest
-* AssistantReply
-* MemoryItem
-* PerceptionResult
-* PolicyDecision
-
-These define how Frank thinks internally.
-
----
-
-# 5. External protocol
-
-**Location:** `packages/protocol`
-
-Defines how external devices communicate with Frank.
-
-Examples:
-
-* ClientMsg
-* ServerMsg
-* WebSocket messages
-* Protocol versioning
-
-This allows devices to evolve independently of the brain.
-
----
-
-# 6. Client adapters
-
-Frank currently supports multiple entry points.
-
-## Android App
-
-```
-POST /v1/analyze
-POST /v1/stt
-POST /v1/tts
-```
-
-Designed for:
-
-* Push-to-talk
-* Camera capture
-* Conversation mode
-* Natural mobile UX
-
----
-
-## Raspberry Pi
-
-```
-WS /v1/device/stream
-```
-
-Features:
-
-* Wake word detection (Porcupine)
-* Voice activity detection (Cobra)
-* Automatic recording
-* Automatic playback
-* Streaming responses
-
----
-
-## Device Frame API
-
-```
-POST /v1/device/frame
-```
-
-Simple request-response endpoint intended for embedded devices.
-
----
-
-### Important invariant
-
-All clients eventually execute:
-
-```
-FrankOrchestrator.handleUserRequest()
-```
-
-No client contains reasoning logic.
-
----
-
-# 7. Current API
-
-## Core
-
-```
-POST /v1/analyze
-POST /v1/tts
-POST /v1/stt
+```text
 GET  /health
-```
+GET  /privacy
+POST /v1/analyze
+POST /v1/stt
+POST /v1/tts
+WS   /v1/device/stream
+POST /v1/device/frame
 
----
-
-## Memory
-
-```
 POST /v1/memory/add
 POST /v1/memory/search
 POST /v1/memory/delete
 GET  /v1/memory/recent
+
+GET  /v1/diag/traces
+GET  /v1/diag/summary
+GET  /v1/diag/provider-usage
+GET  /v1/diag/context-incidents
 ```
 
----
+Product routes and diagnostic routes use separate credentials. A product bearer
+token maps to a server-owned user ID; clients cannot choose ownership. The current
+private demo maps its configured token to the demo user. Multi-user sign-in and
+account recovery are a later product boundary, not an assumption made by V1.
 
-## Device
+## Local development
 
-```
-POST /v1/device/frame
-WS   /v1/device/stream
-```
+Use the Node and pnpm versions declared by the project, then provide the Google
+provider credentials and local auth configuration described by the environment
+example.
 
----
-
-## Diagnostics
-
-```
-GET /v1/diag/traces
-GET /v1/diag/traces/:requestId
-GET /v1/diag/session/:sessionId
-```
-
-These routes expose detailed request observability for development and debugging.
-
----
-
-# 8. Conversation system
-
-Frank maintains short-term conversation context.
-
-Conversation history is used to resolve follow-up questions naturally.
-
-Example:
-
-> "Tell me more."
-
-instead of asking:
-
-> "Tell you more about what?"
-
-Recent conversation is retrieved before LLM reasoning and updated after every successful response.
-
-Conversation context is separate from long-term memory.
-
----
-
-# 9. Memory system
-
-Frank currently supports long-term memory.
-
-Memory is used for:
-
-* Remembered facts
-* User preferences
-* Important information
-* Future recall
-
-Memory retrieval happens before reasoning.
-
-Low-confidence responses are intentionally not stored.
-
----
-
-# 10. Observability
-
-Frank includes a full request tracing system.
-
-Every request records:
-
-* Request metadata
-* Session
-* Timing
-* Every processing stage
-* Stage durations
-* Errors
-* Final response
-
-Typical stages include:
-
-* quality.assess
-* vision.ocr
-* vision.labels
-* memory.search
-* policy.decide
-* conversation.get_recent
-* llm.generate_reply
-* conversation.add_user_turn
-* conversation.add_assistant_turn
-
-Observability exists solely for development and can be disabled without affecting the core assistant.
-
----
-
-# 11. Guardrails
-
-Current guardrails include:
-
-* Provider call budgets
-* Image quality assessment
-* Confidence-aware responses
-* Hallucination reduction
-* Grounding using OCR, labels, memory and conversation
-* Short response enforcement
-* Low-confidence memory protection
-* Structured request tracing
-
----
-
-# 12. Current architecture principles
-
-Frank is intentionally built around:
-
-* One reasoning engine
-* Thin clients
-* Provider abstraction
-* Deterministic orchestration
-* Clear contracts
-* Easy extensibility
-
-The long-term goal is to allow additional providers and devices without modifying the assistant's reasoning.
-
----
-
-# 13. Current development stage
-
-Current status:
-
-* ✅ Core reasoning engine
-* ✅ Android client
-* ✅ Raspberry Pi voice client
-* ✅ Conversation context
-* ✅ Long-term memory
-* ✅ Structured observability
-* ✅ OCR + scene understanding
-* ✅ Speech pipeline
-
-Current focus:
-
-* Improve reasoning quality
-* Reduce response latency
-* Improve prompt engineering
-* Better memory retrieval
-* UX refinement
-* Tool integration (calendar, weather, Spotify, etc.)
-
----
-
-# 14. Future roadmap
-
-Planned work includes:
-
-* Tool calling architecture
-* Calendar integration
-* Weather
-* Music control
-* Alarm and timer support
-* Semantic memory (embeddings)
-* Binary WebSocket streaming
-* Offline capabilities where practical
-* Wearable device support
-* Personalisation
-
-These additions will extend Frank's abilities without changing the core architecture.
-
----
-
-# Mental model
-
-```
-@frank/core
-        ↓
-     The Brain
-
-@frank/contracts
-        ↓
- Brain's Internal Language
-
-@frank/providers
-        ↓
- External AI Services
-
-@frank/protocol
-        ↓
- Device Communication
-
-API Routes
-        ↓
- Thin Adapters
+```sh
+pnpm install
+pnpm typecheck
+pnpm test:v1
+pnpm dev
 ```
 
-> **Frank is one brain with many ears, eyes and voices.**
+Useful validation commands include:
 
----
+```sh
+pnpm test:v1:report
+pnpm benchmark:gemini
+pnpm compare:vision
+```
 
-# Copyright
+The repeatable V1 set covers conversation, recall, weak evidence, empty speech,
+provider failures, cancellation, reconnection, stale frames, context conflicts,
+lost assistance and mobility safety wording. Passing automated tests does not
+replace the physical-device and user validation required before broader release.
+
+## Staging operations
+
+The VM follows the `v1` branch through staged container updates. Operators can
+update, roll back, refresh secrets, back up and verify a restore without changing
+the architecture.
+
+```sh
+sudo frank-update
+sudo frank-rollback
+sudo frank-refresh-secrets
+sudo frank-backup
+sudo frank-restore latest --verify-only
+```
+
+SQLite and the TTS cache live on persistent storage. Daily integrity-checked
+backups are retained locally and copied to a private Cloud Storage bucket. Public
+health is checked every two minutes, failure alerts are configured, and provider
+usage can be reviewed through the protected diagnostics API. See
+[deployment operations](deploy/README.md).
+
+## Data boundary
+
+Raw audio and camera frames are processed in memory and are not retained. Context
+Snapshots expire with the connection, conversation turns are short-lived, traces
+and synthesized speech have bounded retention, and confirmed memories, places and
+preferences remain until deleted. Ordinary logs omit authorization values, request
+bodies, spoken text and location values.
+
+The local typed product-data adapter is intentionally replaceable. Chivora can be
+connected behind the same versioned schemas, ownership rules, idempotency behavior
+and typed errors without changing Frank's reasoning code. See
+[product data](docs/product-data-v1.md) and
+[online security boundary](docs/security-boundary.md).
+
+## Copyright
 
 This repository is published to showcase the project and its implementation.
-
-All source code remains the intellectual property of **Hilary Asogwa**. No permission is granted to copy, modify, redistribute, or use this software without prior written consent.
+All source code remains the intellectual property of **Hilary Asogwa**. No
+permission is granted to copy, modify, redistribute or use this software without
+prior written consent.
 
 **© 2026 Hilary Asogwa. All Rights Reserved.**
-
----
-
-*End of document — valid as of 2026-08-03*

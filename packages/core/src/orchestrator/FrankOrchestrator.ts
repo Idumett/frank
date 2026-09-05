@@ -10,8 +10,11 @@ import {
 } from '@frank/contracts';
 
 import type { FrankDeps, QualityReport } from './types.js';
+import type { TraceSource } from '../observability/types.js';
 import { CallBudget } from './guardrails/callBudget.js';
 import { applyConfidenceTone, enforceShortReply } from './guardrails/shortReply.js';
+import { withDeadline } from '../utils/deadline.js';
+import { mobilitySafetyDecision } from './mobilitySafety.js';
 
 function summarizeInput(args: { request: UserRequest; hasImage: boolean }) {
   return {
@@ -21,6 +24,8 @@ function summarizeInput(args: { request: UserRequest; hasImage: boolean }) {
     query: args.request.query,
     requestedAt: args.request.requestedAt,
     hasImage: args.hasImage,
+    contextSnapshotId: args.request.context?.snapshotId,
+    contextFactCount: args.request.context?.facts.length ?? 0,
   };
 }
 
@@ -114,16 +119,22 @@ export class FrankOrchestrator {
    * The brain:
    * UserRequest + image -> AssistantReply
    */
-  async handleUserRequest(request: UserRequest, imageBytes?: Buffer): Promise<AssistantReply> {
+  async handleUserRequest(
+    request: UserRequest,
+    imageBytes?: Buffer,
+    options: { source?: TraceSource; finishTrace?: boolean; userId?: string } = {},
+  ): Promise<AssistantReply> {
     // console.log('we get to 1');
     const now = new Date().toISOString();
     const requestId = request.trace.requestId;
+    const userId = options.userId ?? 'legacy';
     const stage = createStageTimer(this.deps.observability, requestId);
 
     await this.deps.observability.start({
       requestId,
+      userId,
       sessionId: request.trace.sessionId,
-      source: 'analyze', // temporary default; routes can pass source later
+      source: options.source ?? 'analyze',
       startedAt: now,
       input: summarizeInput({
         request,
@@ -133,6 +144,21 @@ export class FrankOrchestrator {
     });
 
     try {
+      const mobilityBoundary = mobilitySafetyDecision(request.utterance ?? request.query ?? '');
+      if (mobilityBoundary) {
+        const reply = AssistantReplySchema.parse({
+          trace: request.trace,
+          speak: mobilityBoundary.speak,
+          createdAt: now,
+          suggestedAction: 'none',
+          groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 },
+        });
+        await stage(`policy.${mobilityBoundary.code}`, async () => true, { blocked: true });
+        if (options.finishTrace !== false) {
+          await this.deps.observability.finish(requestId, summarizeOutput(reply));
+        }
+        return reply;
+      }
       const budget = new CallBudget({ maxVisionCalls: 2, maxLlmCalls: 1 });
       const spendVision = () => {
         if (!budget.canCallVision()) return false;
@@ -151,7 +177,8 @@ export class FrankOrchestrator {
           imageBytes: imageBytes.length,
         });
 
-        // 1) Vision calls (parallel) - count calls before spending
+        // Ask only the vision service that can answer this intent. Remembering a
+        // scene keeps both text and object evidence because it may be recalled later.
         const callArgs = { trace: request.trace, imageBytes, capturedAt: now };
         const runVision = async (
           name: 'vision.ocr' | 'vision.labels',
@@ -159,13 +186,20 @@ export class FrankOrchestrator {
         ) => {
           if (!spendVision()) return null;
 
-          return stage(name, () => fn.call(this.deps.vision, callArgs), {
-            imageBytes: imageBytes.length,
-          });
+          return stage(
+            name,
+            () => withDeadline(() => fn.call(this.deps.vision, callArgs), 10_000, name),
+            {
+              imageBytes: imageBytes.length,
+            },
+          );
         };
+        const wantsOcr = request.intent === 'read_text' || request.intent === 'remember_this';
+        const wantsLabels =
+          request.intent === 'describe_scene' || request.intent === 'remember_this';
         [ocrRes, labelsRes] = await Promise.all([
-          runVision('vision.ocr', this.deps.vision.analyzeOCR),
-          runVision('vision.labels', this.deps.vision.analyzeLabels),
+          wantsOcr ? runVision('vision.ocr', this.deps.vision.analyzeOCR) : null,
+          wantsLabels ? runVision('vision.labels', this.deps.vision.analyzeLabels) : null,
         ]);
       }
 
@@ -186,13 +220,18 @@ export class FrankOrchestrator {
 
       if (userText) {
         // If user asked anything, search memory using that text
-        memoryHits = await stage('memory.search', () => this.deps.memory.search(userText, 5), {
-          query: userText,
-          limit: 5,
-        });
+        const memoryLimit = positiveInt(process.env.LLM_MEMORY_HIT_LIMIT, 4);
+        memoryHits = await stage(
+          'memory.search',
+          () => this.deps.memory.search(userId, userText, memoryLimit),
+          {
+            query: userText,
+            limit: memoryLimit,
+          },
+        );
       } else if (request.intent === 'recall') {
         // recall with no query: just return recent-ish hits (optional)
-        memoryHits = await stage('memory.search', () => this.deps.memory.search('', 0), {
+        memoryHits = await stage('memory.search', () => this.deps.memory.search(userId, '', 0), {
           query: '',
           limit: 0,
         }); // or implement recent() and use that
@@ -226,9 +265,14 @@ export class FrankOrchestrator {
             usedLabels: (perception.labels?.length ?? 0) > 0,
             usedMemoryHits: memoryHits.length,
           },
+          imageEvidence: quality
+            ? { quality: quality.imageQuality, notes: quality.notes }
+            : undefined,
         };
         const parsed = AssistantReplySchema.parse(reply);
-        await this.deps.observability.finish(requestId, summarizeOutput(parsed));
+        if (options.finishTrace !== false) {
+          await this.deps.observability.finish(requestId, summarizeOutput(parsed));
+        }
         return parsed;
       }
 
@@ -246,9 +290,14 @@ export class FrankOrchestrator {
             usedLabels: (perception.labels?.length ?? 0) > 0,
             usedMemoryHits: memoryHits.length,
           },
+          imageEvidence: quality
+            ? { quality: quality.imageQuality, notes: quality.notes }
+            : undefined,
         };
         const parsed = AssistantReplySchema.parse(reply);
-        await this.deps.observability.finish(requestId, summarizeOutput(parsed));
+        if (options.finishTrace !== false) {
+          await this.deps.observability.finish(requestId, summarizeOutput(parsed));
+        }
         return parsed;
       }
 
@@ -258,68 +307,68 @@ export class FrankOrchestrator {
           speak: 'Too many tries. Please try again in a moment.',
           suggestedAction: 'recapture',
         });
-        await this.deps.observability.finish(requestId, summarizeOutput(parsed));
+        if (options.finishTrace !== false) {
+          await this.deps.observability.finish(requestId, summarizeOutput(parsed));
+        }
         return parsed;
       }
       budget.recordLlmCall();
 
-      const compactMemoryHits = memoryHits.map((m) => `${m.title}: ${m.content}`).slice(0, 5);
+      const memoryChars = positiveInt(process.env.LLM_MEMORY_ITEM_CHAR_LIMIT, 400);
+      const compactMemoryHits = memoryHits.map((m) =>
+        `${m.title}: ${m.content}`.slice(0, memoryChars),
+      );
+      const conversationLimit = positiveInt(process.env.LLM_CONVERSATION_TURN_LIMIT, 6);
       const conversationTurns = request.trace.sessionId
         ? await stage(
             'conversation.get_recent',
-            () => this.deps.conversation.getRecent(request.trace.sessionId!, 6),
-            { sessionId: request.trace.sessionId, limit: 6 },
+            () =>
+              this.deps.conversation.getRecent(userId, request.trace.sessionId!, conversationLimit),
+            { sessionId: request.trace.sessionId, limit: conversationLimit },
           )
         : [];
-      const conversationContext = conversationTurns.map((t) => `${t.role}: ${t.text}`).join(' | ');
+      const conversationChars = positiveInt(process.env.LLM_CONVERSATION_CHAR_LIMIT, 2400);
+      const conversationContext = conversationTurns
+        .map((turn) => `${turn.role}: ${turn.text}`)
+        .join(' | ')
+        .slice(-conversationChars);
 
       const llmReply = await stage(
         'llm.generate_reply',
         () =>
-          this.deps.llm.generateReply({
-            trace: request.trace,
-            userUtterance: request.utterance,
-            perception,
-            memoryHits: compactMemoryHits,
-            conversationContext,
-            now,
-          }),
+          withDeadline(
+            () =>
+              this.deps.llm.generateReply({
+                trace: request.trace,
+                userUtterance: request.utterance,
+                perception,
+                memoryHits: compactMemoryHits,
+                conversationContext,
+                context: formatSelectedContext(request.context),
+                now,
+              }),
+            25_000,
+            'llm.generate_reply',
+          ),
         {
           memoryHits: compactMemoryHits.length,
           hasConversationContext: Boolean(conversationContext),
+          contextFactCount: request.context?.facts.length ?? 0,
           hasOcr: Boolean(perception.ocr?.fullText?.trim()),
           labelCount: perception.labels?.length ?? 0,
         },
       );
-      //Save conversation context
-      if (request.trace.sessionId) {
-        if (request.utterance?.trim()) {
-          await stage(
-            'conversation.add_user_turn',
-            () =>
-              this.deps.conversation.addTurn({
-                sessionId: request.trace.sessionId!,
-                role: 'user',
-                text: request.utterance!.trim(),
-                createdAt: now,
-              }),
-            { sessionId: request.trace.sessionId },
-          );
-        }
-
-        await stage(
-          'conversation.add_assistant_turn',
-          () =>
-            this.deps.conversation.addTurn({
-              sessionId: request.trace.sessionId!,
-              role: 'assistant',
-              text: reply.speak,
-              createdAt: now,
-            }),
-          { sessionId: request.trace.sessionId },
-        );
+      if (llmReply.providerMetadata?.usage) {
+        const timestamp = new Date().toISOString();
+        await this.deps.observability.addStage(requestId, {
+          name: 'llm.usage',
+          startedAt: timestamp,
+          endedAt: timestamp,
+          durationMs: 0,
+          ok: true,
+          data: llmReply.providerMetadata.usage,
+        });
       }
-
       // confidence language + hard shorten
       const toned = applyConfidenceTone({
         text: llmReply.speak,
@@ -335,10 +384,44 @@ export class FrankOrchestrator {
       const reply: AssistantReply = AssistantReplySchema.parse({
         ...llmReply,
         speak,
+        imageEvidence: quality
+          ? { quality: quality.imageQuality, notes: quality.notes }
+          : undefined,
         // Keep the reply deterministic in suggestedAction for low confidence
         suggestedAction:
           policy.confidence === 'low' ? 'recapture' : (llmReply.suggestedAction ?? 'none'),
       });
+
+      // Save conversation context after the final reply has been created.
+      if (request.trace.sessionId) {
+        if (request.utterance?.trim()) {
+          await stage(
+            'conversation.add_user_turn',
+            () =>
+              this.deps.conversation.addTurn({
+                userId,
+                sessionId: request.trace.sessionId!,
+                role: 'user',
+                text: request.utterance!.trim(),
+                createdAt: now,
+              }),
+            { sessionId: request.trace.sessionId },
+          );
+        }
+
+        await stage(
+          'conversation.add_assistant_turn',
+          () =>
+            this.deps.conversation.addTurn({
+              userId,
+              sessionId: request.trace.sessionId!,
+              role: 'assistant',
+              text: reply.speak,
+              createdAt: now,
+            }),
+          { sessionId: request.trace.sessionId },
+        );
+      }
 
       // 6) Store memory (guardrail: DO NOT store when confidence is low)
       // Jarvis mode helps even if unclear, but we avoid dirty memory.
@@ -359,18 +442,35 @@ export class FrankOrchestrator {
         };
 
         MemoryItemSchema.parse(item);
-        await stage('memory.store', () => this.deps.memory.add(item), {
+        await stage('memory.store', () => this.deps.memory.add(userId, item), {
           title: item.title,
           type: item.type,
           tags: item.tags,
         });
       }
 
-      await this.deps.observability.finish(requestId, summarizeOutput(reply));
+      if (options.finishTrace !== false) {
+        await this.deps.observability.finish(requestId, summarizeOutput(reply));
+      }
       return reply;
     } catch (err: any) {
       await this.deps.observability.fail(requestId, err?.message ?? 'Unknown orchestrator error');
       throw err;
     }
   }
+}
+
+function positiveInt(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function formatSelectedContext(context: UserRequest['context']) {
+  if (!context?.facts.length) return undefined;
+  return context.facts
+    .map(
+      (fact) =>
+        `${fact.key}=${fact.status}${fact.value === undefined ? '' : `:${JSON.stringify(fact.value)}`}`,
+    )
+    .join(' | ');
 }

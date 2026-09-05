@@ -12,37 +12,39 @@ export class SqliteConversationStore implements ConversationStore {
       .prepare(
         `
         INSERT INTO conversation_turns (
+          user_id,
           session_id,
           role,
           text,
           created_at
-        ) VALUES (?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?)
         `,
       )
-      .run(turn.sessionId, turn.role, turn.text, turn.createdAt);
+      .run(turn.userId, turn.sessionId, turn.role, turn.text, turn.createdAt);
 
     return Promise.resolve();
   }
 
-  async getRecent(sessionId: string, limit: number): Promise<ConversationTurn[]> {
+  async getRecent(userId: string, sessionId: string, limit: number): Promise<ConversationTurn[]> {
     const cutoff = new Date(Date.now() - 9 * 60 * 1000).toISOString();
 
     const rows = this.db
       .prepare(
         `
-          SELECT session_id, role, text, created_at
+          SELECT user_id, session_id, role, text, created_at
           FROM conversation_turns
-          WHERE session_id = ?
+          WHERE user_id = ? AND session_id = ?
             AND created_at >= ?
           ORDER BY created_at DESC
           LIMIT ?
     `,
       )
-      .all(sessionId, cutoff, limit);
+      .all(userId, sessionId, cutoff, limit);
 
     // DB returns newest first; reverse so prompt reads oldest -> newest
     const turns: ConversationTurn[] = rows
       .map((row: any) => ({
+        userId: row.user_id,
         sessionId: row.session_id,
         role: row.role,
         text: row.text,

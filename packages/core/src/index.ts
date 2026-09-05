@@ -1,4 +1,5 @@
 export * from './orchestrator/FrankOrchestrator.js';
+export * from './orchestrator/mobilitySafety.js';
 export * from './orchestrator/types.js';
 export * from './orchestrator/quality/basicQualityGater.js';
 export * from './orchestrator/policy/basicPolicyEngine.js';
@@ -9,3 +10,4 @@ export * from './prefs/resolveTtsPrefs.js';
 export * from './ux/deviceReply.js';
 export * from './conversation/index.js';
 export * from './observability/index.js';
+export * from './utils/deadline.js';

@@ -10,10 +10,10 @@ import { ConversationStore } from '../conversation/types.js';
 import type { ObservabilityStore } from '../observability/types.js';
 
 export interface MemoryStore {
-  add(item: MemoryItem): Promise<void>;
-  search(query: string, limit: number): Promise<MemoryItem[]>;
-  recent(limit: number): Promise<MemoryItem[]>;
-  delete(ids: string[]): Promise<number>;
+  add(userId: string, item: MemoryItem): Promise<void>;
+  search(userId: string, query: string, limit: number): Promise<MemoryItem[]>;
+  recent(userId: string, limit: number): Promise<MemoryItem[]>;
+  delete(userId: string, ids: string[]): Promise<number>;
 }
 
 export interface PolicyEngine {
@@ -54,8 +54,9 @@ export interface FrankDeps {
       perception: PerceptionResult;
       memoryHits: string[];
       conversationContext: string;
+      context?: string;
       now: string;
-    }): Promise<AssistantReply>;
+    }): Promise<AssistantReply & { providerMetadata?: { usage?: Record<string, unknown> } }>;
   };
   memory: MemoryStore;
   conversation: ConversationStore;
