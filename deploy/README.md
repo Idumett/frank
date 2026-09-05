@@ -4,7 +4,7 @@ Frank runs as **staging** on one Compute Engine VM behind Caddy at `35.242.143.7
 
 ## Update and rollback
 
-The VM deployment follows the `v1` branch using a read-only GitHub deploy key. An update builds the fetched commit, starts it as a candidate, checks its local health, swaps it into service, then checks public HTTPS. The previous container remains available for one-step rollback.
+The VM deployment follows the `main` branch using a read-only GitHub deploy key. An update builds the fetched commit, starts it as a candidate, checks its local health, swaps it into service, then checks public HTTPS. The previous container remains available for one-step rollback.
 
 ```sh
 sudo frank-update

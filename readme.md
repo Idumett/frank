@@ -134,7 +134,7 @@ replace the physical-device and user validation required before broader release.
 
 ## Staging operations
 
-The VM follows the `v1` branch through staged container updates. Operators can
+The VM follows the `main` branch through staged container updates. Operators can
 update, roll back, refresh secrets, back up and verify a restore without changing
 the architecture.
 
