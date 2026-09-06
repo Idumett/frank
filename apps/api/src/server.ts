@@ -32,6 +32,7 @@ import { applyRetention } from './security/retention.js';
 import { TTS_CACHE_DIR } from './ttsCache.js';
 import { SqliteProductDataAdapter } from './productData/SqliteProductDataAdapter.js';
 import { productDataRoutes } from './routes/productData.js';
+import { inferIntent } from './evidence/policy.js';
 
 migrate();
 const sqlite = new SqliteMemoryStore();
@@ -323,7 +324,14 @@ await deviceStreamRoutes(
       .map((turn) => `${turn.role}: ${turn.text}`)
       .join(' | ')
       .slice(-2400);
-    return intentRouter.classifyIntent(utterance, context);
+    try {
+      return await intentRouter.classifyTurn(utterance, context);
+    } catch {
+      return {
+        intent: inferIntent(utterance),
+        productAction: { schemaVersion: '1' as const, action: 'none' as const },
+      };
+    }
   },
 );
 

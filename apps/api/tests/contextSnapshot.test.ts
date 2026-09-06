@@ -80,6 +80,22 @@ describe('Context Snapshot V1', () => {
     expect(selectContext(snapshot(), 'help', 'Tell me a joke')?.facts).toEqual([]);
   });
 
+  it('selects location for a typed action even when the wording has no location keyword', () => {
+    const selected = selectContext(
+      snapshot(),
+      'help',
+      'This is my base',
+      undefined,
+      Date.now(),
+      { schemaVersion: '1', action: 'save_current_place', placeName: 'base' },
+    )!;
+    expect(selected.facts.map((fact) => fact.key)).toEqual([
+      'location',
+      'movement',
+      'location_permission',
+    ]);
+  });
+
   it('rejects expired, cross-session and internally expired snapshots', () => {
     const now = Date.now();
     expect(() => validateSnapshot(snapshot(now - 30_000), 'session-1', now)).toThrow(

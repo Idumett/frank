@@ -4,9 +4,11 @@ import {
   ProductDataRequestV1Schema,
   ProductDataResponseV1Schema,
   ProductEntityV1Schema,
+  PendingProductActionV1Schema,
   type ProductDataRequestV1,
   type ProductDataResponseV1,
   type ProductEntityV1,
+  type PendingProductActionV1,
 } from '@frank/contracts';
 import type { ProductDataPort } from './ProductDataPort.js';
 import type { ConversationTurn, TtsPrefs, UserPrefs } from '@frank/core';
@@ -40,6 +42,34 @@ export class SqliteProductDataAdapter implements ProductDataPort {
   getPreferences(userId: string, sessionId: string): UserPrefs | null { return this.preferences.get(userId, sessionId); }
   claimSession(userId: string, sessionId?: string) { this.sessions.claim(userId, sessionId); }
 
+  getPendingProductAction(userId: string, now = new Date()): PendingProductActionV1 | null {
+    this.db.prepare('DELETE FROM pending_product_actions WHERE expires_at <= ?').run(now.toISOString());
+    const row = this.db
+      .prepare('SELECT payload_json FROM pending_product_actions WHERE owner_id = ?')
+      .get(userId) as { payload_json: string } | undefined;
+    if (!row) return null;
+    const action = PendingProductActionV1Schema.parse(JSON.parse(row.payload_json));
+    return action.ownerId === userId ? action : null;
+  }
+
+  putPendingProductAction(userId: string, input: PendingProductActionV1) {
+    const action = PendingProductActionV1Schema.parse(input);
+    if (action.ownerId !== userId) throw new Error('Pending action owner mismatch');
+    this.db.prepare(`
+      INSERT INTO pending_product_actions (owner_id, schema_version, payload_json, created_at, expires_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(owner_id) DO UPDATE SET
+        schema_version = excluded.schema_version,
+        payload_json = excluded.payload_json,
+        created_at = excluded.created_at,
+        expires_at = excluded.expires_at
+    `).run(userId, action.schemaVersion, JSON.stringify(action), action.createdAt, action.expiresAt);
+  }
+
+  clearPendingProductAction(userId: string) {
+    this.db.prepare('DELETE FROM pending_product_actions WHERE owner_id = ?').run(userId);
+  }
+
   applyRetention(now = new Date()) {
     const nowIso = now.toISOString();
     const resolvedCutoff = new Date(now.getTime() - retentionDays('HAZARD_RESOLVED_RETENTION_DAYS', 7, 30) * 86_400_000).toISOString();
@@ -47,6 +77,7 @@ export class SqliteProductDataAdapter implements ProductDataPort {
     const expiredHazards = this.db.prepare(`DELETE FROM product_entities WHERE entity_type = 'hazard' AND json_extract(payload_json, '$.expiresAt') <= ?`).run(nowIso).changes;
     const resolvedHazards = this.db.prepare(`DELETE FROM product_entities WHERE entity_type = 'hazard' AND json_extract(payload_json, '$.status') = 'resolved' AND updated_at <= ?`).run(resolvedCutoff).changes;
     const operations = this.db.prepare('DELETE FROM product_operations WHERE created_at <= ?').run(operationCutoff).changes;
+    this.db.prepare('DELETE FROM pending_product_actions WHERE expires_at <= ?').run(nowIso);
     this.lastRetentionRun = now.getTime();
     return { expiredHazards, resolvedHazards, operations };
   }

@@ -1,27 +1,31 @@
 import crypto from 'node:crypto';
-import type { ProductEntityV1, SelectedContextV1 } from '@frank/contracts';
+import {
+  PendingProductActionV1Schema,
+  type PendingProductActionV1,
+  type ProductActionProposalV1,
+  type ProductEntityV1,
+  type SelectedContextV1,
+} from '@frank/contracts';
 import type { ProductDataPort } from '../productData/ProductDataPort.js';
 import { mobilitySafetyDecision } from '@frank/core';
 
 type Location = { latitude: number; longitude: number; accuracyMeters: number };
 type Place = Extract<ProductEntityV1, { entityType: 'known_place' }>;
 type Hazard = Extract<ProductEntityV1, { entityType: 'hazard' }>;
-type Pending =
-  | { kind: 'save_place'; expiresAt: number; name: string; location: Location; capturedAt: string }
-  | { kind: 'save_hazard'; expiresAt: number; hazardType: Hazard['hazardType']; description: string; location: Location; capturedAt: string }
-  | { kind: 'delete'; expiresAt: number; entityType: 'known_place' | 'hazard'; id: string; label: string }
-  | { kind: 'rename'; expiresAt: number; place: Place; name: string }
-  | { kind: 'relocate'; expiresAt: number; place: Place; location: Location; capturedAt: string }
-  | { kind: 'resolve'; expiresAt: number; hazard: Hazard };
 
 export type LostAssistanceResult = { speak: string; action: string; data?: Record<string, unknown> };
 
 export class LostAssistanceSession {
-  private pending: Pending | null = null;
+  private pending: PendingProductActionV1 | null = null;
 
   constructor(private readonly store: ProductDataPort, private readonly ownerId: string) {}
 
-  handle(text: string, context: SelectedContextV1 | undefined, requestId: string): LostAssistanceResult | null {
+  handle(
+    text: string,
+    context: SelectedContextV1 | undefined,
+    requestId: string,
+    proposal?: ProductActionProposalV1,
+  ): LostAssistanceResult | null {
     const utterance = text.trim();
     const lower = utterance.toLowerCase();
     const location = selectedLocation(context);
@@ -29,15 +33,47 @@ export class LostAssistanceSession {
     if (safety)
       return { speak: safety.speak, action: `mobility_${safety.code}`, data: { incident: safety.code } };
 
+    this.pending = this.store.getPendingProductAction(this.ownerId);
     if (this.pending) {
-      if (this.pending.expiresAt <= Date.now()) this.pending = null;
-      else if (/^(yes|yeah|yep|confirm|do it|correct|that's right)\b/i.test(utterance))
+      if (this.pending.kind === 'name_place') {
+        if (/^(no|nope|cancel|don't|do not|stop)\b/i.test(utterance)) {
+          this.clearPending();
+          return { speak: 'Cancelled.', action: 'confirmation_cancelled' };
+        }
+        if (/^(yes|yeah|yep|confirm|do it|go ahead|please do|correct|okay|ok)\b/i.test(utterance))
+          return { speak: 'What short name should I use for this place?', action: 'place_name_required' };
+        const name = cleanSpokenName(utterance);
+        if (!name) return { speak: 'What short name should I use for this place?', action: 'place_name_required' };
+        const pending = this.pending;
+        this.setPending({ kind: 'save_place', name, location: pending.location, capturedAt: pending.capturedAt }, requestId);
+        return { speak: `Save this location as ${name}?`, action: 'confirm_save_place' };
+      }
+      if (/^(yes|yeah|yep|confirm|do it|go ahead|please do|correct|that's right|sounds good|okay|ok)\b/i.test(utterance))
         return this.confirm(requestId);
       else if (/^(no|nope|cancel|don't|do not|stop)\b/i.test(utterance)) {
-        this.pending = null;
+        this.clearPending();
         return { speak: 'Cancelled.', action: 'confirmation_cancelled' };
       }
+      if (this.pending.kind === 'save_place') {
+        const correction = utterance.match(/(?:call|name)\s+(?:it|this place)\s+(.+)$|(?:actually|instead),?\s*(?:call|name)?\s*(?:it)?\s*(.+)$/i);
+        const name = cleanSpokenName(correction?.[1] ?? correction?.[2] ?? '');
+        if (name) {
+          const pending = this.pending;
+          this.setPending({ kind: 'save_place', name, location: pending.location, capturedAt: pending.capturedAt }, requestId);
+          return { speak: `Save this location as ${name}?`, action: 'confirm_save_place' };
+        }
+      }
     }
+
+    if (proposal?.action === 'save_current_place' && !proposal.placeName) {
+      if (!location) return locationUnavailable('save that place', context);
+      if (location.accuracyMeters > 100) return inaccurate(location, 'save a place');
+      this.setPending({ kind: 'name_place', location, capturedAt: new Date().toISOString() }, requestId);
+      return { speak: 'What should I call this place?', action: 'place_name_required' };
+    }
+
+    const proposed = proposal ? this.handleProposal(proposal, location, context, requestId) : null;
+    if (proposed) return proposed;
 
     const savePlace = lower.match(/\b(?:save|remember)\s+(?:this\s+|here\s+as\s+|this\s+place\s+as\s+|place\s+as\s+)?(?:place\s+)?(?:as\s+)?([a-z][a-z0-9 '&-]{0,79})$/i);
     if (savePlace && !/\b(pothole|hazard|obstruction|roadworks|uneven)\b/i.test(lower)) {
@@ -46,10 +82,10 @@ export class LostAssistanceSession {
       const name = cleanName(savePlace[1]);
       const existing = this.findPlace(name);
       if (existing) {
-        this.pending = { kind: 'relocate', expiresAt: Date.now() + 120_000, place: existing, location, capturedAt: new Date().toISOString() };
+        this.setPending({ kind: 'relocate', placeId: existing.id, placeName: existing.name, location, capturedAt: new Date().toISOString() }, requestId);
         return { speak: `${name} is already saved. Update it to this location?`, action: 'confirm_relocate_place' };
       }
-      this.pending = { kind: 'save_place', expiresAt: Date.now() + 120_000, name, location, capturedAt: new Date().toISOString() };
+      this.setPending({ kind: 'save_place', name, location, capturedAt: new Date().toISOString() }, requestId);
       return { speak: `Save this location as ${name}?`, action: 'confirm_save_place' };
     }
 
@@ -58,7 +94,7 @@ export class LostAssistanceSession {
       if (!location) return locationUnavailable('save that hazard', context);
       if (location.accuracyMeters > 50) return inaccurate(location, 'save a hazard');
       const description = hazardDescription(hazardType, utterance);
-      this.pending = { kind: 'save_hazard', expiresAt: Date.now() + 120_000, hazardType, description, location, capturedAt: new Date().toISOString() };
+      this.setPending({ kind: 'save_hazard', hazardType, description, location, capturedAt: new Date().toISOString() }, requestId);
       return { speak: `Remember a ${description} near here for 30 days?`, action: 'confirm_save_hazard' };
     }
 
@@ -67,7 +103,7 @@ export class LostAssistanceSession {
       const place = this.findPlace(rename[1]);
       if (!place) return { speak: `I couldn't find a saved place called ${cleanName(rename[1])}.`, action: 'not_found' };
       const name = cleanName(rename[2]);
-      this.pending = { kind: 'rename', expiresAt: Date.now() + 120_000, place, name };
+      this.setPending({ kind: 'rename', placeId: place.id, oldName: place.name, name }, requestId);
       return { speak: `Rename ${place.name} to ${name}?`, action: 'confirm_rename_place' };
     }
 
@@ -77,7 +113,7 @@ export class LostAssistanceSession {
       if (!place) return { speak: `I couldn't find a saved place called ${cleanName(relocate[1])}.`, action: 'not_found' };
       if (!location) return locationUnavailable(`update ${place.name}`, context);
       if (location.accuracyMeters > 100) return inaccurate(location, 'update a place');
-      this.pending = { kind: 'relocate', expiresAt: Date.now() + 120_000, place, location, capturedAt: new Date().toISOString() };
+      this.setPending({ kind: 'relocate', placeId: place.id, placeName: place.name, location, capturedAt: new Date().toISOString() }, requestId);
       return { speak: `Update ${place.name} to this location?`, action: 'confirm_relocate_place' };
     }
 
@@ -85,7 +121,7 @@ export class LostAssistanceSession {
     if (resolve) {
       const hazard = this.findHazard(resolve[1]);
       if (!hazard) return { speak: `I couldn't find that active hazard report.`, action: 'not_found' };
-      this.pending = { kind: 'resolve', expiresAt: Date.now() + 120_000, hazard };
+      this.setPending({ kind: 'resolve', hazardId: hazard.id, description: hazard.description }, requestId);
       return { speak: `Mark ${hazard.description} as resolved?`, action: 'confirm_resolve_hazard' };
     }
 
@@ -94,8 +130,8 @@ export class LostAssistanceSession {
       const label = cleanName(remove[1]);
       const entity = this.findPlace(label) ?? this.findHazard(label);
       if (!entity) return { speak: `I couldn't find ${label} in your saved places or hazards.`, action: 'not_found' };
-      this.pending = { kind: 'delete', expiresAt: Date.now() + 120_000, entityType: entity.entityType, id: entity.id, label: entity.entityType === 'known_place' ? entity.name : entity.description };
-      return { speak: `Delete ${this.pending.label}?`, action: 'confirm_delete' };
+      this.setPending({ kind: 'delete', entityType: entity.entityType, id: entity.id, label: entity.entityType === 'known_place' ? entity.name : entity.description }, requestId);
+      return { speak: `Delete ${entity.entityType === 'known_place' ? entity.name : entity.description}?`, action: 'confirm_delete' };
     }
 
     if (/\b(?:what|which|list|review|show)\b.*\b(saved places|known places|places i|places)\b/i.test(lower))
@@ -113,7 +149,9 @@ export class LostAssistanceSession {
 
   private confirm(requestId: string): LostAssistanceResult {
     const pending = this.pending!;
-    this.pending = null;
+    if (pending.kind === 'name_place')
+      return { speak: 'What short name should I use for this place?', action: 'place_name_required' };
+    this.clearPending();
     const now = new Date().toISOString();
     if (pending.kind === 'delete') {
       const response = this.execute({ operation: 'delete', requestId, idempotencyKey: requestId, entityType: pending.entityType, entityId: pending.id });
@@ -122,19 +160,25 @@ export class LostAssistanceSession {
         : { speak: `I couldn't delete ${pending.label}.`, action: 'storage_error' };
     }
     if (pending.kind === 'rename') {
-      const entity: Place = { ...pending.place, name: pending.name, updatedAt: now, provenance: provenance(requestId, now) };
+      const place = this.findPlaceById(pending.placeId);
+      if (!place) return { speak: `I couldn't find ${pending.oldName} anymore.`, action: 'not_found' };
+      const entity: Place = { ...place, name: pending.name, updatedAt: now, provenance: provenance(requestId, now) };
       const response = this.execute({ operation: 'put', requestId, idempotencyKey: requestId, entity });
-      return response.ok ? { speak: `Saved. ${pending.place.name} is now called ${pending.name}.`, action: 'place_renamed' } : storageFailure();
+      return response.ok ? { speak: `Saved. ${pending.oldName} is now called ${pending.name}.`, action: 'place_renamed' } : storageFailure();
     }
     if (pending.kind === 'relocate') {
-      const entity: Place = { ...pending.place, location: pending.location, updatedAt: now, confirmation: { confirmedBy: 'user', confirmedAt: now }, provenance: provenance(requestId, pending.capturedAt) };
+      const place = this.findPlaceById(pending.placeId);
+      if (!place) return { speak: `I couldn't find ${pending.placeName} anymore.`, action: 'not_found' };
+      const entity: Place = { ...place, location: pending.location, updatedAt: now, confirmation: { confirmedBy: 'user', confirmedAt: now }, provenance: provenance(requestId, pending.capturedAt) };
       const response = this.execute({ operation: 'put', requestId, idempotencyKey: requestId, entity });
-      return response.ok ? { speak: `Updated ${pending.place.name} to this location.`, action: 'place_relocated' } : storageFailure();
+      return response.ok ? { speak: `Updated ${pending.placeName} to this location.`, action: 'place_relocated' } : storageFailure();
     }
     if (pending.kind === 'resolve') {
-      const entity: Hazard = { ...pending.hazard, status: 'resolved', updatedAt: now, confirmation: { confirmedBy: 'user', confirmedAt: now }, provenance: provenance(requestId, now) };
+      const hazard = this.findHazardById(pending.hazardId);
+      if (!hazard) return { speak: `I couldn't find that active hazard report anymore.`, action: 'not_found' };
+      const entity: Hazard = { ...hazard, status: 'resolved', updatedAt: now, confirmation: { confirmedBy: 'user', confirmedAt: now }, provenance: provenance(requestId, now) };
       const response = this.execute({ operation: 'put', requestId, idempotencyKey: requestId, entity });
-      return response.ok ? { speak: `Marked ${pending.hazard.description} as resolved.`, action: 'hazard_resolved' } : storageFailure();
+      return response.ok ? { speak: `Marked ${pending.description} as resolved.`, action: 'hazard_resolved' } : storageFailure();
     }
     if (pending.kind === 'save_place') {
       const entity: Place = { schemaVersion: '1', entityType: 'known_place', id: `place-${crypto.randomUUID()}`, ownerId: this.ownerId, createdAt: now, updatedAt: now, provenance: provenance(requestId, pending.capturedAt), name: pending.name, category: category(pending.name), location: pending.location, confirmation: { confirmedBy: 'user', confirmedAt: now }, status: 'active' };
@@ -145,6 +189,80 @@ export class LostAssistanceSession {
     const entity: Hazard = { schemaVersion: '1', entityType: 'hazard', id: `hazard-${crypto.randomUUID()}`, ownerId: this.ownerId, createdAt: now, updatedAt: now, provenance: provenance(requestId, pending.capturedAt), hazardType: pending.hazardType, description: pending.description, location: pending.location, radiusMeters: 12, reportedAt: now, expiresAt: expiry, confirmation: { confirmedBy: 'user', confirmedAt: now }, status: 'active' };
     const response = this.execute({ operation: 'put', requestId, idempotencyKey: requestId, entity });
     return response.ok ? { speak: `Saved. I'll treat the ${pending.description} as a user report for 30 days.`, action: 'hazard_saved' } : storageFailure();
+  }
+
+  private handleProposal(
+    proposal: ProductActionProposalV1,
+    location: Location | null,
+    context: SelectedContextV1 | undefined,
+    requestId: string,
+  ): LostAssistanceResult | null {
+    const placeName = proposal.placeName ? cleanSpokenName(proposal.placeName) : null;
+    if (proposal.placeName && !placeName)
+      return { speak: 'Please give that place a shorter, simple name.', action: 'invalid_place_name' };
+    switch (proposal.action) {
+      case 'none':
+        return null;
+      case 'save_current_place': {
+        if (!placeName) return null;
+        if (!location) return locationUnavailable('save that place', context);
+        if (location.accuracyMeters > 100) return inaccurate(location, 'save a place');
+        const existing = this.findPlace(placeName);
+        if (existing) {
+          this.setPending({ kind: 'relocate', placeId: existing.id, placeName: existing.name, location, capturedAt: new Date().toISOString() }, requestId);
+          return { speak: `${existing.name} is already saved. Update it to this location?`, action: 'confirm_relocate_place' };
+        }
+        this.setPending({ kind: 'save_place', name: placeName, location, capturedAt: new Date().toISOString() }, requestId);
+        return { speak: `Save this location as ${placeName}?`, action: 'confirm_save_place' };
+      }
+      case 'update_saved_place': {
+        if (!placeName) return { speak: 'Which saved place should I update?', action: 'place_name_required' };
+        const place = this.findPlace(placeName);
+        if (!place) return { speak: `I couldn't find a saved place called ${placeName}.`, action: 'not_found' };
+        if (proposal.newPlaceName) {
+          const newName = cleanSpokenName(proposal.newPlaceName);
+          if (!newName) return { speak: 'Please give that place a shorter, simple name.', action: 'invalid_place_name' };
+          this.setPending({ kind: 'rename', placeId: place.id, oldName: place.name, name: newName }, requestId);
+          return { speak: `Rename ${place.name} to ${newName}?`, action: 'confirm_rename_place' };
+        }
+        if (!location) return locationUnavailable(`update ${place.name}`, context);
+        if (location.accuracyMeters > 100) return inaccurate(location, 'update a place');
+        this.setPending({ kind: 'relocate', placeId: place.id, placeName: place.name, location, capturedAt: new Date().toISOString() }, requestId);
+        return { speak: `Update ${place.name} to this location?`, action: 'confirm_relocate_place' };
+      }
+      case 'delete_saved_place': {
+        if (!placeName) return { speak: 'Which saved place should I delete?', action: 'place_name_required' };
+        const place = this.findPlace(placeName);
+        if (!place) return { speak: `I couldn't find a saved place called ${placeName}.`, action: 'not_found' };
+        this.setPending({ kind: 'delete', entityType: 'known_place', id: place.id, label: place.name }, requestId);
+        return { speak: `Delete ${place.name}?`, action: 'confirm_delete' };
+      }
+      case 'list_saved_places':
+        return this.reviewPlaces();
+      case 'save_current_hazard': {
+        if (!location) return locationUnavailable('save that hazard', context);
+        if (location.accuracyMeters > 50) return inaccurate(location, 'save a hazard');
+        const hazardType = proposal.hazardType ?? 'other';
+        const description = cleanName(proposal.description ?? hazardType.replace('_', ' ')).slice(0, 300);
+        this.setPending({ kind: 'save_hazard', hazardType, description, location, capturedAt: new Date().toISOString() }, requestId);
+        return { speak: `Remember a ${description} near here for 30 days?`, action: 'confirm_save_hazard' };
+      }
+      case 'resolve_hazard': {
+        const label = proposal.description ?? proposal.hazardType?.replace('_', ' ') ?? 'hazard';
+        const hazard = this.findHazard(label);
+        if (!hazard) return { speak: `I couldn't find that active hazard report.`, action: 'not_found' };
+        this.setPending({ kind: 'resolve', hazardId: hazard.id, description: hazard.description }, requestId);
+        return { speak: `Mark ${hazard.description} as resolved?`, action: 'confirm_resolve_hazard' };
+      }
+      case 'list_hazards':
+        return this.reviewHazards();
+      case 'where_am_i':
+        return this.whereAmI(location, context);
+      case 'whats_nearby':
+        return this.nearby(location, context);
+      case 'lost_assistance':
+        return this.lost(location, context);
+    }
   }
 
   private whereAmI(location: Location | null, context?: SelectedContextV1) {
@@ -207,10 +325,34 @@ export class LostAssistanceSession {
   private places() { return this.list('known_place').filter((entity): entity is Place => entity.entityType === 'known_place' && entity.status === 'active'); }
   private hazards() { const now = Date.now(); return this.list('hazard').filter((entity): entity is Hazard => entity.entityType === 'hazard' && entity.status === 'active' && Date.parse(entity.expiresAt) > now); }
   private findPlace(name: string) { const wanted = cleanName(name).toLowerCase(); return this.places().find((place) => place.name.toLowerCase() === wanted); }
+  private findPlaceById(id: string) { return this.places().find((place) => place.id === id); }
   private findHazard(label: string) { const wanted = cleanName(label).toLowerCase(); return this.hazards().find((hazard) => hazard.description.toLowerCase().includes(wanted) || hazard.hazardType.replace('_', ' ') === wanted); }
+  private findHazardById(id: string) { return this.hazards().find((hazard) => hazard.id === id); }
   private list(entityType: 'known_place' | 'hazard') { const response = this.execute({ operation: 'list', requestId: crypto.randomUUID(), entityType, limit: 100 }); return response.ok && response.result.kind === 'list' ? response.result.entities : []; }
   private execute(request: any) { return this.store.execute(this.ownerId, { schemaVersion: '1', ownerId: this.ownerId, ...request }); }
+  private setPending(action: PendingDraft, requestId: string) {
+    const now = new Date();
+    this.pending = PendingProductActionV1Schema.parse({
+      schemaVersion: '1', ownerId: this.ownerId, requestId,
+      createdAt: now.toISOString(), expiresAt: new Date(now.getTime() + 120_000).toISOString(),
+      ...action,
+    });
+    this.store.putPendingProductAction(this.ownerId, this.pending);
+  }
+  private clearPending() {
+    this.pending = null;
+    this.store.clearPendingProductAction(this.ownerId);
+  }
 }
+
+type PendingDraft =
+  | { kind: 'name_place'; location: Location; capturedAt: string }
+  | { kind: 'save_place'; name: string; location: Location; capturedAt: string }
+  | { kind: 'save_hazard'; hazardType: Hazard['hazardType']; description: string; location: Location; capturedAt: string }
+  | { kind: 'delete'; entityType: 'known_place' | 'hazard'; id: string; label: string }
+  | { kind: 'rename'; placeId: string; oldName: string; name: string }
+  | { kind: 'relocate'; placeId: string; placeName: string; location: Location; capturedAt: string }
+  | { kind: 'resolve'; hazardId: string; description: string };
 
 function selectedLocation(context?: SelectedContextV1): Location | null {
   const fact = context?.facts.find((item) => item.key === 'location');
@@ -224,6 +366,12 @@ function radians(value: number) { return value * Math.PI / 180; }
 function byDistance(a: { distanceMeters: number }, b: { distanceMeters: number }) { return a.distanceMeters - b.distanceMeters; }
 function roundDistance(meters: number) { if (meters < 20) return '20 metres'; if (meters < 1_000) return `${Math.round(meters / 10) * 10} metres`; return `${(meters / 1_000).toFixed(1)} kilometres`; }
 function cleanName(value: string) { return value.trim().replace(/[?.!,]+$/, '').replace(/\s+/g, ' '); }
+function cleanSpokenName(value: string) {
+  const name = cleanName(value)
+    .replace(/^(?:call|name)\s+(?:it|this place)\s+/i, '')
+    .replace(/^(?:it(?:'s| is)|that(?:'s| is))\s+/i, '');
+  return /^[\p{L}\p{N}][\p{L}\p{N} '&().-]{0,79}$/u.test(name) ? name : null;
+}
 function category(name: string): Place['category'] { const value = name.toLowerCase(); return /\bhome|house\b/.test(value) ? 'home' : /\bgym|fitness\b/.test(value) ? 'gym' : /\bsupermarket|grocery|shop\b/.test(value) ? 'supermarket' : 'other'; }
 function parseHazard(text: string): Hazard['hazardType'] | null { if (/\bpothole\b/.test(text)) return 'pothole'; if (/\buneven\b/.test(text)) return 'uneven_surface'; if (/\bobstruction|blocked|barrier\b/.test(text)) return 'obstruction'; if (/\broadworks|construction\b/.test(text)) return 'roadworks'; if (/\bhazard\b/.test(text)) return 'other'; return null; }
 function hazardDescription(type: Hazard['hazardType'], text: string) { const base = type.replace('_', ' '); const match = text.match(/\b(?:pothole|uneven surface|obstruction|roadworks|hazard)\b.{0,80}/i); return cleanName(match?.[0] ?? base).slice(0, 300).toLowerCase(); }

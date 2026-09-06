@@ -13,6 +13,9 @@ function adapter() {
     CREATE TABLE product_operations (
       owner_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL,
       response_json TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (owner_id, idempotency_key));
+    CREATE TABLE pending_product_actions (
+      owner_id TEXT PRIMARY KEY, schema_version TEXT NOT NULL, payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
   `);
   return { db, store: new SqliteProductDataAdapter(db) };
 }

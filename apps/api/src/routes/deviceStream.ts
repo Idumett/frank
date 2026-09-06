@@ -3,12 +3,13 @@ import type { FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
 import { z } from 'zod';
 
-import { TtsProvider, SttProvider } from '@frank/providers';
+import { TtsProvider, SttProvider, type TurnClassificationV1 } from '@frank/providers';
 import {
   ContextSnapshotV1Schema,
   UserRequestSchema,
   type ContextSnapshotV1,
   type Intent,
+  type ProductActionProposalV1,
 } from '@frank/contracts';
 import {
   FrankOrchestrator,
@@ -112,7 +113,7 @@ export async function deviceStreamRoutes(
     utterance: string,
     userId: string,
     sessionId?: string,
-  ) => Promise<Intent> = async (text) => inferIntent(text),
+  ) => Promise<Intent | TurnClassificationV1> = async (text) => inferIntent(text),
 ) {
   await app.register(websocket, { options: { maxPayload: 12 * 1024 * 1024 } });
 
@@ -274,7 +275,7 @@ export async function deviceStreamRoutes(
         });
         let deferred = false;
         try {
-          const intent =
+          const classified =
             lastIntent !== 'help'
               ? lastIntent
               : await stage(requestTrace, 'intent.classify', () =>
@@ -285,12 +286,13 @@ export async function deviceStreamRoutes(
                   ),
                 );
           if (activeOperation !== operationId) return;
+          const { intent, productAction } = normalizeClassification(classified);
           lastIntent = intent;
           if (intentNeedsImage(intent)) {
             deferred = true;
             requestFrame(m.text, requestTrace, operationId, m.sentAt);
           } else {
-            await maybeProcess(m.text, requestTrace, true, m.sentAt, operationId, null);
+            await maybeProcess(m.text, requestTrace, true, m.sentAt, operationId, null, productAction);
           }
         } catch (error: any) {
           if (activeOperation !== operationId) return;
@@ -376,7 +378,7 @@ export async function deviceStreamRoutes(
           });
 
           preparationStage = 'intent';
-          const intent =
+          const classified =
             lastIntent !== 'help'
               ? lastIntent
               : await stage(requestTrace, 'intent.classify', () =>
@@ -388,6 +390,7 @@ export async function deviceStreamRoutes(
                 );
           // A stop/disconnect during classification invalidates this turn.
           if (activeOperation !== operationId) return;
+          const { intent, productAction } = normalizeClassification(classified);
           lastIntent = intent;
           if (intentNeedsImage(lastIntent) && !frame) {
             deferredForFrame = true;
@@ -400,6 +403,7 @@ export async function deviceStreamRoutes(
               m.sentAt,
               operationId,
               intentNeedsImage(lastIntent) ? frame : null,
+              productAction,
             );
           }
         } catch (error: any) {
@@ -578,6 +582,7 @@ export async function deviceStreamRoutes(
       clientSentAt?: string,
       reservedOperation?: number,
       reservedFrame?: PendingFrame | null,
+      productAction?: ProductActionProposalV1,
     ) {
       if (!connectionTrace) {
         return safeSend(socket, { type: 'error', message: 'Send hello first', code: 'NO_HELLO' });
@@ -618,6 +623,8 @@ export async function deviceStreamRoutes(
           lastIntent,
           utterance,
           frame?.frameId,
+          Date.now(),
+          productAction,
         );
         const selectedContext = await stage(
           requestTrace,
@@ -655,6 +662,7 @@ export async function deviceStreamRoutes(
           utterance,
           selectedContext,
           requestTrace.requestId,
+          productAction,
         );
         const assistantReply = assistance
           ? await stage(
@@ -777,8 +785,22 @@ function positiveInt(value: string | undefined, fallback: number) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function normalizeClassification(
+  value: Intent | TurnClassificationV1,
+): TurnClassificationV1 {
+  if (typeof value === 'string') {
+    return {
+      intent: value,
+      productAction: { schemaVersion: '1', action: 'none' },
+    };
+  }
+  return value.productAction.action === 'none'
+    ? value
+    : { ...value, intent: 'help' };
+}
+
 export function privacySafeContextUtterance(utterance: string) {
-  return /\b(save|remember|report|rename|change|update|move|correct|delete|forget|remove|resolved)\b/i.test(
+  return /\b(save|remember|mark|report|rename|change|update|move|correct|delete|forget|remove|resolved|home|location|place|hazard|pothole)\b/i.test(
     utterance,
   )
     ? '[context data command]'

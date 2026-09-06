@@ -108,6 +108,15 @@ export function migrate() {
       request_hash TEXT NOT NULL, response_json TEXT NOT NULL, created_at TEXT NOT NULL,
       PRIMARY KEY (owner_id, idempotency_key)
     );
+    CREATE TABLE IF NOT EXISTS pending_product_actions (
+      owner_id TEXT PRIMARY KEY,
+      schema_version TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_pending_product_actions_expiry
+      ON pending_product_actions(expires_at);
   `);
 
   // embeddings: optional (for later semantic search)

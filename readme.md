@@ -15,6 +15,7 @@ and WebSocket APIs. The current release includes:
 - short-term conversation and owner-scoped long-term memory;
 - Context Snapshot for time, permissions, app state, movement and foreground location;
 - user-confirmed known places, approximate orientation and remembered hazards;
+- natural-language, confirmed product actions with reconnect-safe pending writes;
 - deterministic mobility and road-crossing safety boundaries;
 - typed, versioned product-data contracts with a persistent local adapter and
   Chivora-compatible fixtures;

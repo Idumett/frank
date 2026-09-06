@@ -14,6 +14,9 @@ function setup() {
     CREATE TABLE product_operations (
       owner_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL,
       response_json TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (owner_id, idempotency_key));
+    CREATE TABLE pending_product_actions (
+      owner_id TEXT PRIMARY KEY, schema_version TEXT NOT NULL, payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
   `);
   const store = new SqliteProductDataAdapter(db);
   return { db, store, session: new LostAssistanceSession(store, 'dan') };
@@ -42,6 +45,64 @@ describe('lost assistance', () => {
     expect(result.action).toBe('location_assistance');
     expect(result.speak).toContain('gym');
     expect(result.speak).toContain('south');
+    db.close();
+  });
+
+  it('executes a typed natural-language proposal and survives a reconnect before confirmation', () => {
+    const { db, store, session } = setup();
+    expect(
+      session.handle(
+        'Mark where I am as home',
+        context(),
+        'request-natural-001',
+        { schemaVersion: '1', action: 'save_current_place', placeName: 'home' },
+      ),
+    ).toMatchObject({ action: 'confirm_save_place', speak: 'Save this location as home?' });
+
+    const reconnected = new LostAssistanceSession(store, 'dan');
+    expect(reconnected.handle('go ahead', undefined, 'request-natural-002')).toMatchObject({
+      action: 'place_saved',
+      speak: 'Saved home.',
+    });
+    expect(reconnected.handle('Where am I?', context(), 'request-natural-003')?.speak).toContain(
+      'home',
+    );
+    db.close();
+  });
+
+  it('does not execute an expired confirmation after reconnecting', () => {
+    const { db, store, session } = setup();
+    session.handle(
+      'This spot is my gym',
+      context(),
+      'request-expiring-001',
+      { schemaVersion: '1', action: 'save_current_place', placeName: 'gym' },
+    );
+    db.prepare("UPDATE pending_product_actions SET expires_at = '2020-01-01T00:00:00.000Z'").run();
+    const reconnected = new LostAssistanceSession(store, 'dan');
+    expect(reconnected.handle('yes', undefined, 'request-expiring-002')).toBeNull();
+    expect(db.prepare('SELECT COUNT(*) count FROM product_entities').get()).toEqual({ count: 0 });
+    db.close();
+  });
+
+  it('asks for a name when the user requests a save without supplying one', () => {
+    const { db, session } = setup();
+    expect(
+      session.handle(
+        'Save my current location',
+        context(),
+        'request-name-001',
+        { schemaVersion: '1', action: 'save_current_place' },
+      ),
+    ).toMatchObject({ action: 'place_name_required' });
+    expect(session.handle('Call it my flat', undefined, 'request-name-002')).toMatchObject({
+      action: 'confirm_save_place',
+      speak: 'Save this location as my flat?',
+    });
+    expect(session.handle('yes', undefined, 'request-name-003')).toMatchObject({
+      action: 'place_saved',
+      speak: 'Saved my flat.',
+    });
     db.close();
   });
 

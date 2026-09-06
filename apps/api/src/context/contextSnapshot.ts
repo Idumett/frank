@@ -3,6 +3,7 @@ import {
   SelectedContextV1Schema,
   type ContextSnapshotV1,
   type Intent,
+  type ProductActionProposalV1,
   type SelectedContextV1,
 } from '@frank/contracts';
 
@@ -68,12 +69,17 @@ export function selectContext(
   utterance: string,
   processedFrameId?: string,
   now = Date.now(),
+  productAction?: ProductActionProposalV1,
 ): SelectedContextV1 | undefined {
   if (!snapshot || Date.parse(snapshot.expiresAt) <= now) return undefined;
   const text = utterance.toLowerCase();
   const keys = new Set<SelectedContextV1['facts'][number]['key']>();
+  const actionNeedsLocation = productAction && [
+    'save_current_place', 'update_saved_place', 'save_current_hazard',
+    'where_am_i', 'whats_nearby', 'lost_assistance',
+  ].includes(productAction.action);
   if (/\b(time|date|day|today|tonight|morning|afternoon|evening)\b/.test(text)) keys.add('time');
-  if (/\b(where am i|lost|location|nearby|near me|around here|which way|direction|save|remember|report|pothole|hazard)\b/.test(text)) {
+  if (actionNeedsLocation || /\b(where am i|lost|location|nearby|near me|around here|which way|direction|save|remember|report|pothole|hazard)\b/.test(text)) {
     keys.add('location');
     keys.add('movement');
     keys.add('location_permission');
