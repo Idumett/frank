@@ -22,7 +22,7 @@ describe('GoogleSttProvider', () => {
     expect(requests).toHaveLength(1);
     expect(requests[0].config.model).toBe('short');
     expect(requests[0].config.denoiserConfig).toEqual({ denoiseAudio: false, snrThreshold: 0 });
-    expect(requests[0].configMask).toBe('*');
+    expect(requests[0].configMask).toEqual({ paths: ['*'] });
   });
 
   it('retries an empty short-model result with the fallback model', async () => {

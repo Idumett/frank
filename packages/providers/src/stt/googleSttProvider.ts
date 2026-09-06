@@ -60,7 +60,7 @@ export class GoogleSttProvider implements SttProvider {
         },
         // The named recognizer has defaults. Explicitly replace them so a stale
         // cloud-side model or SNR setting cannot undo the per-request policy.
-        configMask: '*',
+        configMask: { paths: ['*'] },
       });
 
       const result = transcriptFrom(response);
