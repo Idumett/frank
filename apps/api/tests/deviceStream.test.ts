@@ -106,6 +106,7 @@ describe('V1 device stream', () => {
       JSON.stringify({
         type: 'frame',
         trace: { requestId: 'before-hello', sessionId: 'session-1' },
+        frameRequestId: crypto.randomUUID(),
         frameId: 'frame-before-hello',
         seq: 1,
         mime: 'image/jpeg',
@@ -136,7 +137,8 @@ describe('V1 device stream', () => {
         audioBase64: 'a'.repeat(20),
       }),
     );
-    expect(await messages.next()).toMatchObject({
+    const busy = await messages.next();
+    expect(busy).toMatchObject({
       type: 'error',
       code: 'BUSY',
       trace: { requestId: 'request-222' },
@@ -183,7 +185,8 @@ describe('V1 device stream', () => {
         audioBase64: 'a'.repeat(20),
       }),
     );
-    expect(await messages.next()).toMatchObject({
+    const failure = await messages.next();
+    expect(failure).toMatchObject({
       type: 'error',
       code: 'STT_FAIL',
       message: 'No speech recognized',
@@ -310,7 +313,8 @@ describe('V1 device stream', () => {
       }),
     );
     if (transport === 'audio') expect((await messages.next()).type).toBe('transcript');
-    expect(await messages.next()).toMatchObject({
+    const frameRequest = await messages.next();
+    expect(frameRequest).toMatchObject({
       type: 'frame_required',
       trace: turn,
       reason: 'describe_scene',
@@ -319,6 +323,21 @@ describe('V1 device stream', () => {
       JSON.stringify({
         type: 'frame',
         trace: turn,
+        frameRequestId: crypto.randomUUID(),
+        frameId: 'frame-from-old-request',
+        seq: 8,
+        mime: 'image/jpeg',
+        bytesBase64: 'a'.repeat(20),
+        capturedAt: new Date().toISOString(),
+        ageMs: 0,
+      }),
+    );
+    expect(await messages.next()).toMatchObject({ type: 'error', code: 'WRONG_FRAME_REQUEST' });
+    socket.send(
+      JSON.stringify({
+        type: 'frame',
+        trace: turn,
+        frameRequestId: frameRequest.frameRequestId,
         frameId: 'fresh-frame-visual',
         seq: 9,
         mime: 'image/jpeg',
@@ -363,11 +382,12 @@ describe('V1 device stream', () => {
       JSON.stringify({ type: 'audio', trace, mime: 'audio/wav', audioBase64: 'a'.repeat(20) }),
     );
     await messages.next();
-    await messages.next();
+    const frameRequest = await messages.next();
     socket.send(
       JSON.stringify({
         type: 'frame',
         trace,
+        frameRequestId: frameRequest.frameRequestId,
         frameId: 'stale-frame-1',
         seq: 1,
         mime: 'image/jpeg',
@@ -532,6 +552,7 @@ describe('V1 device stream', () => {
       JSON.stringify({
         type: 'frame',
         trace: turn,
+        frameRequestId: crypto.randomUUID(),
         frameId: 'frame-request-7',
         seq: 7,
         mime: 'image/jpeg',

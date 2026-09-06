@@ -55,6 +55,7 @@ const ClientMsgSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('frame'),
     trace: TraceSchema,
+    frameRequestId: z.string().uuid(),
     frameId: z.string().min(8).max(100),
     seq: z.number().int().min(0),
     mime: z.enum(['image/jpeg', 'image/png', 'image/webp']),
@@ -86,6 +87,7 @@ type PendingTurn = {
   operationId: number;
   sentAt?: string;
   timeout: NodeJS.Timeout;
+  frameRequestId: string;
 };
 
 function safeSend(socket: any, msg: unknown) {
@@ -211,6 +213,14 @@ export async function deviceStreamRoutes(
             code: 'UNEXPECTED_FRAME',
           });
         }
+        if (m.frameRequestId !== pendingTurn.frameRequestId) {
+          return safeSend(socket, {
+            type: 'error',
+            trace: m.trace,
+            message: 'That camera frame belongs to an earlier capture request.',
+            code: 'WRONG_FRAME_REQUEST',
+          });
+        }
         const freshness = frameAge(m.capturedAt, m.ageMs);
         if (!freshness.valid || freshness.ageMs > maxFrameAgeMs()) {
           return safeSend(socket, {
@@ -292,7 +302,15 @@ export async function deviceStreamRoutes(
             deferred = true;
             requestFrame(m.text, requestTrace, operationId, m.sentAt);
           } else {
-            await maybeProcess(m.text, requestTrace, true, m.sentAt, operationId, null, productAction);
+            await maybeProcess(
+              m.text,
+              requestTrace,
+              true,
+              m.sentAt,
+              operationId,
+              null,
+              productAction,
+            );
           }
         } catch (error: any) {
           if (activeOperation !== operationId) return;
@@ -415,7 +433,10 @@ export async function deviceStreamRoutes(
           safeSend(socket, {
             type: 'error',
             trace: requestTrace,
-            message: preparationStage === 'intent' ? 'I could not work out what information is needed. Please try again.' : error?.message ?? 'STT failed',
+            message:
+              preparationStage === 'intent'
+                ? 'I could not work out what information is needed. Please try again.'
+                : (error?.message ?? 'STT failed'),
             code: preparationStage === 'intent' ? 'INTENT_FAIL' : 'STT_FAIL',
           });
         } finally {
@@ -471,6 +492,7 @@ export async function deviceStreamRoutes(
       operationId: number,
       sentAt?: string,
     ) {
+      const frameRequestId = crypto.randomUUID();
       const timeout = setTimeout(
         async () => {
           if (pendingTurn?.operationId !== operationId) return;
@@ -488,7 +510,7 @@ export async function deviceStreamRoutes(
             code: 'FRAME_REQUIRED',
           });
         },
-        positiveInt(process.env.FRAME_WAIT_MS, 3_000),
+        positiveInt(process.env.FRAME_WAIT_MS, 5_000),
       );
       pendingTurn = {
         utterance: utterance,
@@ -496,12 +518,14 @@ export async function deviceStreamRoutes(
         operationId,
         sentAt: sentAt,
         timeout,
+        frameRequestId,
       };
       safeSend(socket, {
         type: 'frame_required',
         trace: requestTrace,
         maxAgeMs: maxFrameAgeMs(),
         reason: lastIntent,
+        frameRequestId,
       });
     }
 
@@ -751,12 +775,14 @@ export async function deviceStreamRoutes(
                 action: assistance.action,
                 audioBytes: audio.audioBytes.length,
                 frameSeq: frame?.seq,
+                evidence: frame ? traceEvidence(frame, assistantReply) : undefined,
               }
             : {
                 speak: assistantReply.speak,
                 suggestedAction: assistantReply.suggestedAction,
                 audioBytes: audio.audioBytes.length,
                 frameSeq: frame?.seq,
+                evidence: frame ? traceEvidence(frame, assistantReply) : undefined,
               },
         );
       } catch (error: any) {
@@ -780,23 +806,33 @@ export async function deviceStreamRoutes(
   });
 }
 
+function traceEvidence(
+  frame: PendingFrame,
+  reply: { imageEvidence?: { quality: 'good' | 'ok' | 'poor'; notes: string[] } },
+) {
+  return {
+    frameId: frame.frameId,
+    capturedAt: frame.capturedAt,
+    ageMs: frame.ageMs + Date.now() - frame.receivedAt,
+    clientQuality: frame.clientQuality,
+    assessedQuality: reply.imageEvidence?.quality ?? 'ok',
+    qualityNotes: reply.imageEvidence?.notes ?? [],
+  };
+}
+
 function positiveInt(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function normalizeClassification(
-  value: Intent | TurnClassificationV1,
-): TurnClassificationV1 {
+function normalizeClassification(value: Intent | TurnClassificationV1): TurnClassificationV1 {
   if (typeof value === 'string') {
     return {
       intent: value,
       productAction: { schemaVersion: '1', action: 'none' },
     };
   }
-  return value.productAction.action === 'none'
-    ? value
-    : { ...value, intent: 'help' };
+  return value.productAction.action === 'none' ? value : { ...value, intent: 'help' };
 }
 
 export function privacySafeContextUtterance(utterance: string) {

@@ -19,6 +19,7 @@ export type ClientMsg =
   | {
       type: 'frame';
       trace: DeviceTrace;
+      frameRequestId: string;
       frameId: string;
       seq: number;
       mime: 'image/jpeg' | 'image/png' | 'image/webp';
@@ -41,6 +42,7 @@ export type ServerMsg =
       trace: DeviceTrace;
       maxAgeMs: number;
       reason: 'read_text' | 'describe_scene' | 'remember_this';
+      frameRequestId: string;
     }
   | { type: 'ack'; seq: number; trace?: DeviceTrace; processed?: boolean }
   | { type: 'transcript'; trace: DeviceTrace; transcript: string; confidence?: number }

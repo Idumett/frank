@@ -1,8 +1,5 @@
 import type { QualityGater, QualityReport } from '../types.js';
-
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
-}
+import sharp from 'sharp';
 
 /**
  * Very basic gating without heavy CV deps:
@@ -22,28 +19,56 @@ export class BasicQualityGater implements QualityGater {
     if (imageBytes.length < 15_000) notes.push('very_small_image');
     if (imageBytes.length > 8_000_000) notes.push('very_large_image');
 
-    // Cheap variance check over a sample
-    const sampleStep = clamp(Math.floor(imageBytes.length / 20_000), 1, 250);
-    let count = 0;
-    let sum = 0;
-    let sumSq = 0;
+    try {
+      const pixels = await sharp(imageBytes)
+        .rotate()
+        .resize({ width: 320, height: 320, fit: 'inside', withoutEnlargement: true })
+        .greyscale()
+        .raw()
+        .toBuffer();
+      let sum = 0;
+      let sumSq = 0;
+      for (const value of pixels) {
+        sum += value;
+        sumSq += value * value;
+      }
+      const mean = sum / pixels.length;
+      const deviation = Math.sqrt(Math.max(0, sumSq / pixels.length - mean * mean));
+      if (mean < 28) notes.push('image_too_dark');
+      if (mean > 245) notes.push('image_overexposed');
+      if (deviation < 7) notes.push('low_visual_detail');
 
-    for (let i = 0; i < imageBytes.length; i += sampleStep) {
-      const v = imageBytes[i]!;
-      count++;
-      sum += v;
-      sumSq += v * v;
+      const edges = await sharp(imageBytes)
+        .rotate()
+        .resize({ width: 320, height: 320, fit: 'inside', withoutEnlargement: true })
+        .greyscale()
+        .convolve({ width: 3, height: 3, kernel: [0, 1, 0, 1, -4, 1, 0, 1, 0] })
+        .raw()
+        .toBuffer();
+      let edgeSum = 0;
+      let edgeSumSq = 0;
+      for (const value of edges) {
+        edgeSum += value;
+        edgeSumSq += value * value;
+      }
+      const edgeVariance = edgeSumSq / edges.length - (edgeSum / edges.length) ** 2;
+      if (edgeVariance < 18) notes.push('image_may_be_blurred');
+    } catch {
+      notes.push('invalid_image');
     }
 
-    const mean = sum / count;
-    const variance = sumSq / count - mean * mean;
-
-    // Heuristic thresholds
-    if (variance < 80) notes.push('low_detail_or_overexposed');
-    if (variance > 5000) notes.push('noisy_or_compressed');
-
     let imageQuality: QualityReport['imageQuality'] = 'ok';
-    if (notes.includes('very_small_image') || notes.includes('low_detail_or_overexposed')) {
+    if (
+      notes.some((note) =>
+        [
+          'very_small_image',
+          'image_too_dark',
+          'image_overexposed',
+          'low_visual_detail',
+          'invalid_image',
+        ].includes(note),
+      )
+    ) {
       imageQuality = 'poor';
     } else if (notes.length === 0) {
       imageQuality = 'good';
