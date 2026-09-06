@@ -21,7 +21,7 @@ import { deviceStreamRoutes } from './routes/deviceStream.js';
 import { prefsTtsRoutes } from './routes/prefs.js';
 import { ttsVoicesRoutes } from './routes/ttsVoices.js';
 import { diagRoutes } from './routes/diag.js';
-import { GoogleSttProvider, GoogleTtsProvider } from '@frank/providers';
+import { GeminiLlmProvider, GoogleSttProvider, GoogleTtsProvider } from '@frank/providers';
 import { NoopObservabilityStore } from '@frank/core';
 import { SqliteObservabilityStore } from './observability/SqliteObservabilityStore.js';
 import { observedStage } from './observability/stage.js';
@@ -43,6 +43,9 @@ const observabilityStore =
   process.env.OBSERVABILITY_ENABLED === 'true'
     ? new SqliteObservabilityStore(sqlite.rawDb)
     : new NoopObservabilityStore();
+const intentRouter = new GeminiLlmProvider({
+  model: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash',
+});
 const frank = makeFrank(memoryStore, conversationStore, observabilityStore);
 const app = Fastify({
   logger: {
@@ -305,9 +308,23 @@ if (observabilityStore instanceof SqliteObservabilityStore) {
 }
 
 await deviceRoutes(app, frank, stt, tts, { prefs, observability: observabilityStore, claim });
-await deviceStreamRoutes(app, frank, stt, tts, observabilityStore, claim, (userId) =>
-  streamRequests.take(userId),
+await deviceStreamRoutes(
+  app,
+  frank,
+  stt,
+  tts,
+  observabilityStore,
+  claim,
+  (userId) => streamRequests.take(userId),
   productData,
+  async (utterance, userId, sessionId) => {
+    const turns = sessionId ? await conversationStore.getRecent(userId, sessionId, 6) : [];
+    const context = turns
+      .map((turn) => `${turn.role}: ${turn.text}`)
+      .join(' | ')
+      .slice(-2400);
+    return intentRouter.classifyIntent(utterance, context);
+  },
 );
 
 const port = Number(process.env.PORT ?? 3000);

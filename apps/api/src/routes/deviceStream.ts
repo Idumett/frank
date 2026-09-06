@@ -8,6 +8,7 @@ import {
   ContextSnapshotV1Schema,
   UserRequestSchema,
   type ContextSnapshotV1,
+  type Intent,
 } from '@frank/contracts';
 import {
   FrankOrchestrator,
@@ -107,6 +108,11 @@ export async function deviceStreamRoutes(
     retryAfterSeconds: 0,
   }),
   productData?: ProductDataPort,
+  classifyIntent: (
+    utterance: string,
+    userId: string,
+    sessionId?: string,
+  ) => Promise<Intent> = async (text) => inferIntent(text),
 ) {
   await app.register(websocket, { options: { maxPayload: 12 * 1024 * 1024 } });
 
@@ -245,19 +251,65 @@ export async function deviceStreamRoutes(
             code: 'RATE_LIMITED',
           });
         const requestTrace = resolveTrace(m.trace);
-        lastIntent = inferIntent(m.text, lastIntent);
-        const frame = intentNeedsImage(lastIntent) ? takeFrame(requestTrace) : null;
-        if (intentNeedsImage(lastIntent) && !frame) {
+        if (!connectionTrace)
+          return safeSend(socket, { type: 'error', code: 'NO_HELLO', message: 'Send hello first' });
+        if (inFlight)
+          return safeSend(socket, {
+            type: 'error',
+            trace: requestTrace,
+            code: 'BUSY',
+            message: 'Frank is still processing',
+          });
+        inFlight = true;
+        activeTrace = requestTrace;
+        const operationId = ++activeOperation;
+        await observability.start({
+          requestId: requestTrace.requestId,
+          userId: req.userId,
+          sessionId: requestTrace.sessionId,
+          source: 'device_stream',
+          startedAt: new Date().toISOString(),
+          input: { utterance: privacySafeContextUtterance(m.text) },
+          stages: [],
+        });
+        let deferred = false;
+        try {
+          const intent =
+            lastIntent !== 'help'
+              ? lastIntent
+              : await stage(requestTrace, 'intent.classify', () =>
+                  withDeadline(
+                    () => classifyIntent(m.text, req.userId, requestTrace.sessionId),
+                    6_000,
+                    'intent.classify',
+                  ),
+                );
+          if (activeOperation !== operationId) return;
+          lastIntent = intent;
+          if (intentNeedsImage(intent)) {
+            deferred = true;
+            requestFrame(m.text, requestTrace, operationId, m.sentAt);
+          } else {
+            await maybeProcess(m.text, requestTrace, true, m.sentAt, operationId, null);
+          }
+        } catch (error: any) {
+          if (activeOperation !== operationId) return;
+          await observability.fail(
+            requestTrace.requestId,
+            error?.message ?? 'Intent classification failed',
+          );
           safeSend(socket, {
             type: 'error',
             trace: requestTrace,
-            message: 'Point the camera at what you want me to check and try again.',
-            code: 'FRAME_REQUIRED',
+            code: 'INTENT_FAIL',
+            message: 'I could not work out what information is needed. Please try again.',
           });
-          lastIntent = 'help';
-          return;
+        } finally {
+          if (activeOperation === operationId && !deferred) {
+            inFlight = false;
+            lastIntent = 'help';
+          }
         }
-        await maybeProcess(m.text, requestTrace, false, m.sentAt, undefined, frame);
         return;
       }
 
@@ -298,6 +350,7 @@ export async function deviceStreamRoutes(
         });
 
         let deferredForFrame = false;
+        let preparationStage: 'speech' | 'intent' = 'speech';
         try {
           const sttResult = await stage(
             requestTrace,
@@ -322,41 +375,23 @@ export async function deviceStreamRoutes(
             confidence: sttResult.confidence,
           });
 
-          lastIntent = inferIntent(sttResult.transcript, lastIntent);
+          preparationStage = 'intent';
+          const intent =
+            lastIntent !== 'help'
+              ? lastIntent
+              : await stage(requestTrace, 'intent.classify', () =>
+                  withDeadline(
+                    () => classifyIntent(sttResult.transcript, req.userId, requestTrace.sessionId),
+                    6_000,
+                    'intent.classify',
+                  ),
+                );
+          // A stop/disconnect during classification invalidates this turn.
+          if (activeOperation !== operationId) return;
+          lastIntent = intent;
           if (intentNeedsImage(lastIntent) && !frame) {
             deferredForFrame = true;
-            const timeout = setTimeout(
-              async () => {
-                if (pendingTurn?.operationId !== operationId) return;
-                pendingTurn = null;
-                inFlight = false;
-                lastIntent = 'help';
-                await observability.fail(
-                  requestTrace.requestId,
-                  'Fresh camera evidence was not received',
-                );
-                safeSend(socket, {
-                  type: 'error',
-                  trace: requestTrace,
-                  message: 'Point the camera at what you want me to check and try again.',
-                  code: 'FRAME_REQUIRED',
-                });
-              },
-              positiveInt(process.env.FRAME_WAIT_MS, 3_000),
-            );
-            pendingTurn = {
-              utterance: sttResult.transcript,
-              trace: requestTrace,
-              operationId,
-              sentAt: m.sentAt,
-              timeout,
-            };
-            safeSend(socket, {
-              type: 'frame_required',
-              trace: requestTrace,
-              maxAgeMs: maxFrameAgeMs(),
-              reason: lastIntent,
-            });
+            requestFrame(sttResult.transcript, requestTrace, operationId, m.sentAt);
           } else {
             await maybeProcess(
               sttResult.transcript,
@@ -368,12 +403,16 @@ export async function deviceStreamRoutes(
             );
           }
         } catch (error: any) {
-          await observability.fail(requestTrace.requestId, error?.message ?? 'STT failed');
+          if (activeOperation !== operationId) return;
+          await observability.fail(
+            requestTrace.requestId,
+            error?.message ?? 'Turn preparation failed',
+          );
           safeSend(socket, {
             type: 'error',
             trace: requestTrace,
-            message: error?.message ?? 'STT failed',
-            code: 'STT_FAIL',
+            message: preparationStage === 'intent' ? 'I could not work out what information is needed. Please try again.' : error?.message ?? 'STT failed',
+            code: preparationStage === 'intent' ? 'INTENT_FAIL' : 'STT_FAIL',
           });
         } finally {
           if (activeOperation === operationId && !deferredForFrame) inFlight = false;
@@ -399,6 +438,8 @@ export async function deviceStreamRoutes(
           clearTimeout(pendingTurn.timeout);
           pendingTurn = null;
         }
+        lastIntent = 'help';
+        lastQuery = undefined;
         abort.abort();
         abort = new AbortController();
         activeOperation += 1;
@@ -419,6 +460,46 @@ export async function deviceStreamRoutes(
         await observability.fail(activeTrace.requestId, 'Client disconnected');
       }
     });
+
+    function requestFrame(
+      utterance: string,
+      requestTrace: DeviceTrace,
+      operationId: number,
+      sentAt?: string,
+    ) {
+      const timeout = setTimeout(
+        async () => {
+          if (pendingTurn?.operationId !== operationId) return;
+          pendingTurn = null;
+          inFlight = false;
+          lastIntent = 'help';
+          await observability.fail(
+            requestTrace.requestId,
+            'Fresh camera evidence was not received',
+          );
+          safeSend(socket, {
+            type: 'error',
+            trace: requestTrace,
+            message: 'Point the camera at what you want me to check and try again.',
+            code: 'FRAME_REQUIRED',
+          });
+        },
+        positiveInt(process.env.FRAME_WAIT_MS, 3_000),
+      );
+      pendingTurn = {
+        utterance: utterance,
+        trace: requestTrace,
+        operationId,
+        sentAt: sentAt,
+        timeout,
+      };
+      safeSend(socket, {
+        type: 'frame_required',
+        trace: requestTrace,
+        maxAgeMs: maxFrameAgeMs(),
+        reason: lastIntent,
+      });
+    }
 
     function resolveTrace(messageTrace?: DeviceTrace): DeviceTrace {
       return {
@@ -532,7 +613,12 @@ export async function deviceStreamRoutes(
       }
 
       try {
-        const contextCandidate = selectContext(currentContext, lastIntent, utterance, frame?.frameId);
+        const contextCandidate = selectContext(
+          currentContext,
+          lastIntent,
+          utterance,
+          frame?.frameId,
+        );
         const selectedContext = await stage(
           requestTrace,
           'context.select',
@@ -565,7 +651,11 @@ export async function deviceStreamRoutes(
           context: selectedContext,
         });
 
-        const assistance = lostAssistance?.handle(utterance, selectedContext, requestTrace.requestId);
+        const assistance = lostAssistance?.handle(
+          utterance,
+          selectedContext,
+          requestTrace.requestId,
+        );
         const assistantReply = assistance
           ? await stage(
               requestTrace,
@@ -688,7 +778,9 @@ function positiveInt(value: string | undefined, fallback: number) {
 }
 
 export function privacySafeContextUtterance(utterance: string) {
-  return /\b(save|remember|report|rename|change|update|move|correct|delete|forget|remove|resolved)\b/i.test(utterance)
+  return /\b(save|remember|report|rename|change|update|move|correct|delete|forget|remove|resolved)\b/i.test(
+    utterance,
+  )
     ? '[context data command]'
     : utterance;
 }

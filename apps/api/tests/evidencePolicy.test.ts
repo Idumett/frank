@@ -8,6 +8,9 @@ describe('camera evidence policy', () => {
     ['Tell me more about that', 'help', false],
     ['Read this label', 'read_text', true],
     ['What is in front of me?', 'describe_scene', true],
+    ['What am I looking at?', 'describe_scene', true],
+    ['What am I seeing?', 'describe_scene', true],
+    ['Can you tell me what I am looking at?', 'describe_scene', true],
     ['Remember this for later', 'remember_this', true],
   ] as const)('classifies %s', (utterance, expected, needsImage) => {
     const intent = inferIntent(utterance);

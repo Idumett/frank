@@ -53,8 +53,12 @@ afterEach(async () => {
 
 describe('V1 device stream', () => {
   it('redacts place and hazard commands from retained trace input', () => {
-    expect(privacySafeContextUtterance('Save this place as my private gym')).toBe('[context data command]');
-    expect(privacySafeContextUtterance('Report a pothole outside my house')).toBe('[context data command]');
+    expect(privacySafeContextUtterance('Save this place as my private gym')).toBe(
+      '[context data command]',
+    );
+    expect(privacySafeContextUtterance('Report a pothole outside my house')).toBe(
+      '[context data command]',
+    );
     expect(privacySafeContextUtterance('Where am I?')).toBe('Where am I?');
   });
   it('requires hello and refuses a second request while one is running', async () => {
@@ -77,13 +81,23 @@ describe('V1 device stream', () => {
     const stt = {
       transcribe: async () => {
         await sttWait;
-        return { transcript: 'Hello Frank' };
+        return { transcript: 'Tell me how a camera works' };
       },
     };
     const tts = {
       speak: async () => ({ audioBytes: Buffer.from('audio'), mimeType: 'audio/mpeg' }),
     };
-    await deviceStreamRoutes(app, frank as any, stt as any, tts as any, traces);
+    await deviceStreamRoutes(
+      app,
+      frank as any,
+      stt as any,
+      tts as any,
+      traces,
+      undefined,
+      undefined,
+      undefined,
+      async () => 'help',
+    );
     await app.ready();
     const socket = await app.injectWS('/v1/device/stream');
     const messages = new MessageQueue(socket);
@@ -240,7 +254,12 @@ describe('V1 device stream', () => {
     socket.terminate();
   });
 
-  it('requests fresh evidence only after a visual intent is understood', async () => {
+  it.each([
+    ['What am I looking at?', 'audio'],
+    ['Is this apple bruised?', 'audio'],
+    ['And the one beside it?', 'audio'],
+    ['Is this apple bruised?', 'utterance'],
+  ])('requests evidence after semantic routing: %s (%s)', async (utterance, transport) => {
     const app = Fastify();
     apps.push(app);
     const traces = new TraceRecorder();
@@ -260,9 +279,19 @@ describe('V1 device stream', () => {
           };
         },
       } as any,
-      { transcribe: async () => ({ transcript: 'What is in front of me?' }) } as any,
-      { speak: async () => ({ audioBytes: Buffer.from('audio'), mimeType: 'audio/mpeg' }) } as any,
+      { transcribe: async () => ({ transcript: utterance }) } as any,
+      {
+        speak: async () => ({ audioBytes: Buffer.from('audio'), mimeType: 'audio/mpeg' }),
+      } as any,
       traces,
+      undefined,
+      undefined,
+      undefined,
+      async (text, userId, sessionId) => {
+        expect(text).toBe(utterance);
+        expect(sessionId).toBe('session-visual');
+        return 'describe_scene';
+      },
     );
     await app.ready();
     const socket = await app.injectWS('/v1/device/stream');
@@ -273,13 +302,14 @@ describe('V1 device stream', () => {
     await messages.next();
     socket.send(
       JSON.stringify({
-        type: 'audio',
+        type: transport,
+        text: utterance,
         trace: turn,
         mime: 'audio/wav',
         audioBase64: 'a'.repeat(20),
       }),
     );
-    expect((await messages.next()).type).toBe('transcript');
+    if (transport === 'audio') expect((await messages.next()).type).toBe('transcript');
     expect(await messages.next()).toMatchObject({
       type: 'frame_required',
       trace: turn,

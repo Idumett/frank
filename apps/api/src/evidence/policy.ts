@@ -12,7 +12,7 @@ export function inferIntent(utterance: string, selected: Intent = 'help'): Inten
   if (/\b(remember this|save this|remember what|store this)\b/.test(text)) return 'remember_this';
   if (/\b(remember|recall|where did i (put|leave)|what did i)\b/.test(text)) return 'recall';
   if (
-    /\b(look|see|camera|in front|ahead of me|around me|describe|what is this|what's this|what is here)\b/.test(
+    /\b(look(?:ing)?|see(?:ing)?|camera|in front|ahead of me|around me|describe|what is this|what's this|what is here)\b/.test(
       text,
     )
   )
