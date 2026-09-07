@@ -18,10 +18,17 @@ waits for a frame captured after that message arrived and returns the capture ID
 An unsolicited frame, a frame for another turn, or a frame copied for an earlier
 capture request is rejected. The acknowledgement names the exact frame processed.
 
-Android keeps at most three JPEGs in its private cache while the assistant is
-open. On `frame_required`, it copies the newest frame inside the age limit and
-sends its frame ID, capture time, current age and local quality value. The copy
-is deleted after sending. Closing the assistant deletes the buffer.
+Android starts a focused capture while the user is speaking and keeps at most
+three JPEGs in its private cache. After audio has been queued, the newest eligible
+frame uploads over a separate authenticated HTTP request. Audio therefore keeps
+priority on the WebSocket while speech recognition and image transfer run in
+parallel. The server holds the frame in memory for no more than ten seconds.
+
+After semantic classification, a visual request consumes that prepared frame.
+A nonvisual request marks it rejected and discards it without decoding it or
+calling an image provider. If the prepared upload is missing, Android and the
+server retain the `frame_required` flow as a slower fallback. All local copies
+are deleted after sending or when the assistant closes.
 
 The default limits are configurable:
 
@@ -30,6 +37,8 @@ The default limits are configurable:
 - `FRAME_CLOCK_SKEW_MS=10000`
 - WebSocket frame payload: 11 MB base64 inside a 12 MB message
 - Android image file: 8 MB maximum, JPEG quality 80, one local capture per second
+- Prepared evidence wait after classification: 500 ms
+- Prepared evidence cache: two frames per user, 32 globally, ten-second expiry
 
 The server measures age again on arrival and immediately before processing. It
 decodes the image to assess pixel brightness, exposure, visual detail and likely

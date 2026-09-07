@@ -81,6 +81,15 @@ type PendingFrame = {
   trace: DeviceTrace;
   receivedAt: number;
 };
+
+const EvidenceHeadersSchema = z.object({
+  sessionId: z.string().min(8).max(100),
+  frameId: z.string().min(8).max(100),
+  capturedAt: z.string(),
+  ageMs: z.coerce.number().int().min(0).max(60_000),
+  quality: z.enum(['unknown', 'good', 'poor']).default('unknown'),
+  mime: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+});
 type PendingTurn = {
   utterance: string;
   trace: DeviceTrace;
@@ -118,6 +127,91 @@ export async function deviceStreamRoutes(
   ) => Promise<Intent | TurnClassificationV1> = async (text) => inferIntent(text),
 ) {
   await app.register(websocket, { options: { maxPayload: 12 * 1024 * 1024 } });
+
+  const preparedEvidence = new Map<string, { frame: PendingFrame; expires: NodeJS.Timeout }>();
+  const rejectedEvidence = new Map<string, NodeJS.Timeout>();
+  const evidenceKey = (userId: string, sessionId: string | undefined, requestId: string) =>
+    `${userId}:${sessionId ?? 'none'}:${requestId}`;
+  const discardEvidence = (key: string) => {
+    const existing = preparedEvidence.get(key);
+    if (existing) clearTimeout(existing.expires);
+    preparedEvidence.delete(key);
+    const prior = rejectedEvidence.get(key);
+    if (prior) clearTimeout(prior);
+    const expires = setTimeout(() => rejectedEvidence.delete(key), 15_000);
+    expires.unref();
+    rejectedEvidence.set(key, expires);
+  };
+  const takePreparedEvidence = (key: string) => {
+    const existing = preparedEvidence.get(key);
+    if (!existing) return null;
+    clearTimeout(existing.expires);
+    preparedEvidence.delete(key);
+    return existing.frame;
+  };
+  const waitForPreparedEvidence = async (key: string) => {
+    const deadline = Date.now() + positiveInt(process.env.PREPARED_EVIDENCE_WAIT_MS, 500);
+    while (Date.now() < deadline) {
+      const frame = takePreparedEvidence(key);
+      if (frame) return frame;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return null;
+  };
+
+  app.addContentTypeParser(
+    ['image/jpeg', 'image/png', 'image/webp'],
+    { parseAs: 'buffer', bodyLimit: 8 * 1024 * 1024 },
+    (_req, body, done) => done(null, body),
+  );
+  app.post('/v1/device/evidence/:requestId', async (req, reply) => {
+    const requestId = z
+      .string()
+      .min(8)
+      .max(100)
+      .parse((req.params as any).requestId);
+    const headers = EvidenceHeadersSchema.parse({
+      sessionId: req.headers['x-frank-session-id'],
+      frameId: req.headers['x-frank-frame-id'],
+      capturedAt: req.headers['x-frank-captured-at'],
+      ageMs: req.headers['x-frank-frame-age-ms'],
+      quality: req.headers['x-frank-frame-quality'] ?? 'unknown',
+      mime: req.headers['content-type'],
+    });
+    claim(req.userId, headers.sessionId);
+    const key = evidenceKey(req.userId, headers.sessionId, requestId);
+    if (rejectedEvidence.has(key)) return reply.code(204).send();
+    const ownerPrefix = `${req.userId}:`;
+    if (
+      !preparedEvidence.has(key) &&
+      ([...preparedEvidence.keys()].filter((candidate) => candidate.startsWith(ownerPrefix))
+        .length >= 2 ||
+        preparedEvidence.size >= 32)
+    )
+      return reply.code(429).send({ error: 'Too many pending camera frames' });
+    const freshness = frameAge(headers.capturedAt, headers.ageMs);
+    const bytes = req.body as Buffer;
+    if (!freshness.valid || freshness.ageMs > maxFrameAgeMs() || !bytes?.length)
+      return reply.code(422).send({ error: 'Invalid camera evidence' });
+    const prior = preparedEvidence.get(key);
+    if (prior) clearTimeout(prior.expires);
+    const expires = setTimeout(() => preparedEvidence.delete(key), 10_000);
+    expires.unref();
+    preparedEvidence.set(key, {
+      expires,
+      frame: {
+        bytes,
+        seq: -1,
+        frameId: headers.frameId,
+        capturedAt: headers.capturedAt,
+        ageMs: freshness.ageMs,
+        clientQuality: headers.quality,
+        trace: { requestId, sessionId: headers.sessionId },
+        receivedAt: Date.now(),
+      },
+    });
+    return reply.code(202).send({ accepted: true });
+  });
 
   app.get('/v1/device/stream', { websocket: true }, (socket, req) => {
     let connectionTrace: DeviceTrace | null = null;
@@ -299,9 +393,29 @@ export async function deviceStreamRoutes(
           const { intent, productAction } = normalizeClassification(classified);
           lastIntent = intent;
           if (intentNeedsImage(intent)) {
-            deferred = true;
-            requestFrame(m.text, requestTrace, operationId, m.sentAt);
+            const frame = await stage(requestTrace, 'evidence.select', () =>
+              waitForPreparedEvidence(
+                evidenceKey(req.userId, requestTrace.sessionId, requestTrace.requestId),
+              ),
+            );
+            if (frame) {
+              await maybeProcess(
+                m.text,
+                requestTrace,
+                true,
+                m.sentAt,
+                operationId,
+                frame,
+                productAction,
+              );
+            } else {
+              deferred = true;
+              requestFrame(m.text, requestTrace, operationId, m.sentAt);
+            }
           } else {
+            discardEvidence(
+              evidenceKey(req.userId, requestTrace.sessionId, requestTrace.requestId),
+            );
             await maybeProcess(
               m.text,
               requestTrace,
@@ -411,9 +525,30 @@ export async function deviceStreamRoutes(
           const { intent, productAction } = normalizeClassification(classified);
           lastIntent = intent;
           if (intentNeedsImage(lastIntent) && !frame) {
-            deferredForFrame = true;
-            requestFrame(sttResult.transcript, requestTrace, operationId, m.sentAt);
+            const prepared = await stage(requestTrace, 'evidence.select', () =>
+              waitForPreparedEvidence(
+                evidenceKey(req.userId, requestTrace.sessionId, requestTrace.requestId),
+              ),
+            );
+            if (prepared) {
+              await maybeProcess(
+                sttResult.transcript,
+                requestTrace,
+                true,
+                m.sentAt,
+                operationId,
+                prepared,
+                productAction,
+              );
+            } else {
+              deferredForFrame = true;
+              requestFrame(sttResult.transcript, requestTrace, operationId, m.sentAt);
+            }
           } else {
+            if (!intentNeedsImage(lastIntent))
+              discardEvidence(
+                evidenceKey(req.userId, requestTrace.sessionId, requestTrace.requestId),
+              );
             await maybeProcess(
               sttResult.transcript,
               requestTrace,
@@ -710,7 +845,7 @@ export async function deviceStreamRoutes(
         if (localAbort.signal.aborted) return;
 
         lastReplyText = assistantReply.speak;
-        if (frame) {
+        if (frame && frame.seq >= 0) {
           safeSend(socket, { type: 'ack', seq: frame.seq, trace: requestTrace, processed: true });
         }
         safeSend(socket, {

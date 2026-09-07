@@ -400,6 +400,153 @@ describe('V1 device stream', () => {
     socket.terminate();
   });
 
+  it('uses independently prepared evidence without a second camera round trip', async () => {
+    const app = Fastify();
+    apps.push(app);
+    const traces = new TraceRecorder();
+    let receivedImageBytes = 0;
+    await deviceStreamRoutes(
+      app,
+      {
+        handleUserRequest: async (request: any, image?: Buffer) => {
+          receivedImageBytes = image?.length ?? 0;
+          return {
+            trace: request.trace,
+            speak: 'A prepared view.',
+            createdAt: new Date().toISOString(),
+            suggestedAction: 'none',
+            imageEvidence: { quality: 'good', notes: [] },
+            groundedIn: { usedOcr: false, usedLabels: true, usedMemoryHits: 0 },
+          };
+        },
+      } as any,
+      { transcribe: async () => ({ transcript: 'What is in front of me?' }) } as any,
+      { speak: async () => ({ audioBytes: Buffer.from('audio'), mimeType: 'audio/mpeg' }) } as any,
+      traces,
+      undefined,
+      undefined,
+      undefined,
+      async () => 'describe_scene',
+    );
+    await app.ready();
+    const sessionId = 'session-prepared';
+    const requestId = 'request-prepared';
+    const upload = await app.inject({
+      method: 'POST',
+      url: `/v1/device/evidence/${requestId}`,
+      headers: {
+        'content-type': 'image/jpeg',
+        'x-frank-session-id': sessionId,
+        'x-frank-frame-id': 'prepared-frame-1',
+        'x-frank-captured-at': new Date().toISOString(),
+        'x-frank-frame-age-ms': '0',
+        'x-frank-frame-quality': 'good',
+      },
+      payload: Buffer.from('prepared image bytes'),
+    });
+    expect(upload.statusCode).toBe(202);
+
+    const socket = await app.injectWS('/v1/device/stream');
+    const messages = new MessageQueue(socket);
+    socket.send(
+      JSON.stringify({ type: 'hello', trace: { requestId: 'hello-prepared', sessionId } }),
+    );
+    await messages.next();
+    socket.send(
+      JSON.stringify({
+        type: 'audio',
+        trace: { requestId, sessionId },
+        mime: 'audio/wav',
+        audioBase64: 'a'.repeat(20),
+      }),
+    );
+    expect((await messages.next()).type).toBe('transcript');
+    const meta = await messages.next();
+    expect(meta).toMatchObject({ type: 'meta', evidence: { frameId: 'prepared-frame-1' } });
+    expect(receivedImageBytes).toBe(20);
+    expect((await messages.next()).type).toBe('audio');
+    socket.terminate();
+  });
+
+  it('discards prepared evidence immediately for a nonvisual request', async () => {
+    const app = Fastify();
+    apps.push(app);
+    const traces = new TraceRecorder();
+    let receivedImage: Buffer | undefined;
+    await deviceStreamRoutes(
+      app,
+      {
+        handleUserRequest: async (request: any, image?: Buffer) => {
+          receivedImage = image;
+          return {
+            trace: request.trace,
+            speak: 'It is noon.',
+            createdAt: new Date().toISOString(),
+            suggestedAction: 'none',
+            groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 0 },
+          };
+        },
+      } as any,
+      { transcribe: async () => ({ transcript: 'What time is it?' }) } as any,
+      { speak: async () => ({ audioBytes: Buffer.from('audio'), mimeType: 'audio/mpeg' }) } as any,
+      traces,
+      undefined,
+      undefined,
+      undefined,
+      async () => 'help',
+    );
+    await app.ready();
+    const sessionId = 'session-nonvisual';
+    const requestId = 'request-nonvisual';
+    const headers = {
+      'content-type': 'image/jpeg',
+      'x-frank-session-id': sessionId,
+      'x-frank-frame-id': 'discarded-frame-1',
+      'x-frank-captured-at': new Date().toISOString(),
+      'x-frank-frame-age-ms': '0',
+      'x-frank-frame-quality': 'good',
+    };
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: `/v1/device/evidence/${requestId}`,
+          headers,
+          payload: Buffer.from('unused image bytes'),
+        })
+      ).statusCode,
+    ).toBe(202);
+    const socket = await app.injectWS('/v1/device/stream');
+    const messages = new MessageQueue(socket);
+    socket.send(
+      JSON.stringify({ type: 'hello', trace: { requestId: 'hello-nonvisual', sessionId } }),
+    );
+    await messages.next();
+    socket.send(
+      JSON.stringify({
+        type: 'audio',
+        trace: { requestId, sessionId },
+        mime: 'audio/wav',
+        audioBase64: 'a'.repeat(20),
+      }),
+    );
+    await messages.next();
+    await messages.next();
+    await messages.next();
+    expect(receivedImage).toBeUndefined();
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: `/v1/device/evidence/${requestId}`,
+          headers,
+          payload: Buffer.from('late image bytes'),
+        })
+      ).statusCode,
+    ).toBe(204);
+    socket.terminate();
+  });
+
   it('reports TTS failures and repeats the last successful response', async () => {
     const app = Fastify();
     apps.push(app);
