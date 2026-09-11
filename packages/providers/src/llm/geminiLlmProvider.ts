@@ -25,6 +25,7 @@ export type GeminiUsage = {
 export type TurnClassificationV1 = {
   intent: Intent;
   productAction: ProductActionProposalV1;
+  memoryQuery?: string;
 };
 
 export class GeminiLlmProvider implements LlmProvider {
@@ -57,7 +58,11 @@ remember_this: explicitly save something currently visible as a visual memory.
 recall: retrieve a previously remembered fact, object or event, without inspecting the current scene.
 help: general conversation, explanations, device time or location context, or any product-data action. Do not use the camera for these.
 Use recent conversation to resolve references, but do not carry a visual intent into an unrelated new question. Distinguish a request to inspect a current object from a general question about that kind of object. A request not to use the camera must not request an image. If there is insufficient context to know what the user refers to, choose help so the assistant can clarify. Do not answer the request or claim to have seen anything.
-Also return one productAction. Choose none unless the user is asking to save, change, remove, review or use their current location, saved places or a local hazard. Interpret natural wording such as "mark this as home", "remember where I am as the gym", "this is my new supermarket", "what places do you remember", "where am I", and "I am lost". Never infer a write from an informational statement. The server will validate and confirm every write; you are only proposing a typed action.
+General advice and recommendations are help unless the user refers to a current visible choice, explicitly asks Frank to inspect something, or makes a clear follow-up to a current visual discussion. For example, "recommend a shirt for me to wear" with no visual referent is help. "Which of these shirts should I wear?", "recommend one from what you can see", and "which one would suit me?" after Frank has just described visible shirts need describe_scene. Never assume a current object solely because the user names an object.
+The memoryQuery is for retrieval, not classification. Every recommendation memoryQuery MUST contain the word preference, including a visual recommendation whose object category is not known until the image is processed. Expand it to the personal dimensions that could change the answer even when those words are absent from the request. Clothing and outfit advice must include clothing, color, colour, style, size, fit and preference. Food advice should include food, diet, cuisine, taste and preference. Activity advice should include activity, routine, interests and preference. For a category-unknown visual choice use "preference color colour style size fit taste accessibility". Keep the query factual and do not invent the user's values.
+Also return one productAction. For locations and hazards, choose none unless the user is asking to save, change, remove, review or use that data. Interpret natural wording such as "mark this as home", "remember where I am as the gym", "this is my new supermarket", "what places do you remember", "where am I", and "I am lost".
+Choose save_personal_memory when the user clearly states a durable, non-sensitive fact about themselves that would improve future answers, even if they do not say "remember". Examples include favourite colours, food or clothing preferences, routines, and preferred accessibility interaction. Extract a short canonical memorySubject and memoryValue without adding facts. Never store passwords, authentication data, financial details, medical information, precise locations, third-party information, or temporary states. Do not infer a preference from a question or recommendation request. The server will validate and complete every write; you are only proposing a typed action.
+Choose delete_personal_memory when the user asks Frank to forget a previously stated personal fact or preference. Return its memoryKind and canonical memorySubject, but no memoryValue.
 For save_current_place, update_saved_place or delete_saved_place, return placeName. For a rename request put the existing name in placeName and the requested name in newPlaceName. For save_current_hazard, return hazardType and a short factual description. Do not put coordinates into the result.`,
         responseMimeType: 'application/json',
         responseJsonSchema: {
@@ -78,6 +83,8 @@ For save_current_place, update_saved_place or delete_saved_place, return placeNa
                     'delete_saved_place', 'list_saved_places', 'save_current_hazard',
                     'resolve_hazard', 'list_hazards', 'where_am_i',
                     'whats_nearby', 'lost_assistance',
+                    'save_personal_memory',
+                    'delete_personal_memory',
                   ],
                 },
                 placeName: { type: 'string' },
@@ -87,15 +94,25 @@ For save_current_place, update_saved_place or delete_saved_place, return placeNa
                   enum: ['pothole', 'uneven_surface', 'obstruction', 'roadworks', 'other'],
                 },
                 description: { type: 'string' },
+                memoryKind: {
+                  type: 'string',
+                  enum: ['preference', 'personal_fact', 'routine', 'accessibility_preference'],
+                },
+                memorySubject: { type: 'string' },
+                memoryValue: { type: 'string' },
               },
               required: ['schemaVersion', 'action'],
               additionalProperties: false,
             },
+            memoryQuery: {
+              type: 'string',
+              description: 'A short semantic retrieval query for personal memories that may help answer this turn. Every recommendation query must contain "preference". Expand the request into preference dimensions, related concepts and common spelling variants rather than merely paraphrasing it. Example: a shirt recommendation becomes "clothing color colour style size preference". Return the user wording when no expansion is useful.',
+            },
           },
-          required: ['intent', 'productAction'],
+          required: ['intent', 'productAction', 'memoryQuery'],
           additionalProperties: false,
         },
-        maxOutputTokens: 80,
+        maxOutputTokens: 140,
         temperature: 0,
         thinkingConfig: this.model.startsWith('gemini-2.5')
           ? { thinkingBudget: 0 }
@@ -107,6 +124,7 @@ For save_current_place, update_saved_place or delete_saved_place, return placeNa
     return {
       intent: UserRequestSchema.shape.intent.parse(parsed.intent),
       productAction: ProductActionProposalV1Schema.parse(parsed.productAction),
+      memoryQuery: cleanMemoryQuery(parsed.memoryQuery, utterance),
     };
   }
 
@@ -167,6 +185,11 @@ For save_current_place, update_saved_place or delete_saved_place, return placeNa
     };
     return parsed;
   }
+}
+
+function cleanMemoryQuery(value: unknown, fallback: string) {
+  if (typeof value !== 'string') return fallback.trim().slice(0, 200);
+  return value.replace(/\s+/g, ' ').trim().slice(0, 200) || fallback.trim().slice(0, 200);
 }
 
 function positiveInt(value: string | undefined, fallback: number) {

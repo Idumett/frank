@@ -60,6 +60,104 @@ describe('V1 device stream', () => {
       '[context data command]',
     );
     expect(privacySafeContextUtterance('Where am I?')).toBe('Where am I?');
+    expect(privacySafeContextUtterance('My favourite colour is red')).toBe(
+      '[personal context]',
+    );
+  });
+
+  it('stores a natural personal preference before confirming it', async () => {
+    const app = Fastify();
+    apps.push(app);
+    const traces = new TraceRecorder();
+    const saved: any[] = [];
+    await deviceStreamRoutes(
+      app,
+      { handleUserRequest: async () => { throw new Error('LLM should not confirm a write'); } } as any,
+      { transcribe: async () => ({ transcript: 'My favourite colour is red' }) } as any,
+      { speak: async () => ({ audioBytes: Buffer.from('audio'), mimeType: 'audio/mpeg' }) } as any,
+      traces,
+      undefined,
+      undefined,
+      { add: async (userId: string, item: any) => saved.push({ userId, item }) } as any,
+      async () => ({
+        intent: 'help',
+        memoryQuery: 'favorite colour color clothing preference red',
+        productAction: {
+          schemaVersion: '1', action: 'save_personal_memory', memoryKind: 'preference',
+          memorySubject: 'favourite colour', memoryValue: 'red',
+        },
+      }),
+    );
+    await app.ready();
+    const socket = await app.injectWS('/v1/device/stream');
+    const messages = new MessageQueue(socket);
+    socket.send(JSON.stringify({
+      type: 'hello', trace: { requestId: 'connection-memory', sessionId: 'session-memory' },
+    }));
+    await messages.next();
+    socket.send(JSON.stringify({
+      type: 'audio', trace: { requestId: 'request-memory', sessionId: 'session-memory' },
+      mime: 'audio/wav', audioBase64: 'a'.repeat(20),
+    }));
+    expect((await messages.next()).type).toBe('transcript');
+    expect(await messages.next()).toMatchObject({
+      type: 'meta', reply: { speak: "Got it. I'll remember that your favourite colour is red." },
+    });
+    expect((await messages.next()).type).toBe('audio');
+    expect(saved).toEqual([
+      expect.objectContaining({
+        item: expect.objectContaining({ title: 'favourite colour', content: 'red' }),
+      }),
+    ]);
+    expect(traces.records.get('request-memory')?.stages.map((stage) => stage.name)).toContain(
+      'memory.personal_action',
+    );
+    socket.terminate();
+  });
+
+  it('passes the semantic memory query into an ordinary recommendation', async () => {
+    const app = Fastify();
+    apps.push(app);
+    const traces = new TraceRecorder();
+    let receivedQuery: string | undefined;
+    await deviceStreamRoutes(
+      app,
+      {
+        handleUserRequest: async (request: any) => {
+          receivedQuery = request.memoryQuery;
+          return {
+            trace: request.trace, speak: 'Try a red shirt.', createdAt: new Date().toISOString(),
+            suggestedAction: 'none', groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 1 },
+          };
+        },
+      } as any,
+      { transcribe: async () => ({ transcript: 'Recommend a shirt for me to wear' }) } as any,
+      { speak: async () => ({ audioBytes: Buffer.from('audio'), mimeType: 'audio/mpeg' }) } as any,
+      traces,
+      undefined,
+      undefined,
+      undefined,
+      async () => ({
+        intent: 'help', memoryQuery: 'clothing color style preference',
+        productAction: { schemaVersion: '1', action: 'none' },
+      }),
+    );
+    await app.ready();
+    const socket = await app.injectWS('/v1/device/stream');
+    const messages = new MessageQueue(socket);
+    socket.send(JSON.stringify({
+      type: 'hello', trace: { requestId: 'connection-recommendation', sessionId: 'session-recommendation' },
+    }));
+    await messages.next();
+    socket.send(JSON.stringify({
+      type: 'audio', trace: { requestId: 'request-recommendation', sessionId: 'session-recommendation' },
+      mime: 'audio/wav', audioBase64: 'a'.repeat(20),
+    }));
+    await messages.next();
+    await messages.next();
+    await messages.next();
+    expect(receivedQuery).toBe('clothing color style preference');
+    socket.terminate();
   });
   it('requires hello and refuses a second request while one is running', async () => {
     const app = Fastify();

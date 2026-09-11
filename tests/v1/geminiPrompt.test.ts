@@ -17,4 +17,18 @@ describe('Gemini prompt', () => {
     expect(prompt).not.toContain('IMAGE_PRESENT');
     expect(prompt.match(/Keys: hall table/g)).toHaveLength(1);
   });
+
+  it('supports an honest fallback when a requested visual choice is absent', () => {
+    const prompt = buildFrankPrompt({
+      userUtterance: 'Which shirt should I wear?',
+      perception,
+      memoryHits: ['favourite colour: red'],
+      now: '2026-08-18T10:00:00.000Z',
+    });
+    expect(prompt).toContain('Current image labels: door');
+    expect(prompt).toContain('Relevant memory: favourite colour: red');
+    expect(FRANK_SYSTEM_INSTRUCTION).toContain(
+      'If the requested item is not established by the current evidence, say that briefly',
+    );
+  });
 });

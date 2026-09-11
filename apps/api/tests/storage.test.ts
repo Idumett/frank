@@ -51,6 +51,42 @@ describe('V1 SQLite storage', () => {
     expect(await memory.recent('user-1', 10)).toHaveLength(1);
     memory.close();
   });
+
+  it('keeps personal preferences available for related recommendations', async () => {
+    const memory = new SqliteMemoryStore(':memory:');
+    createTables(memory);
+    await memory.add('user-1', {
+      id: 'personal-color', type: 'text', title: 'favourite colour',
+      content: 'red', tags: ['personal', 'preference', 'subject:favorite-color'],
+      createdAt: '2026-09-11T09:00:00.000Z',
+    });
+    await memory.add('user-1', {
+      id: 'personal-drink', type: 'text', title: 'preferred drink',
+      content: 'preferred drink: coffee', tags: ['personal', 'preference', 'subject:preferred-drink'],
+      createdAt: '2026-09-11T10:00:00.000Z',
+    });
+
+    const hits = await memory.search('user-1', 'clothing color style preference', { limit: 2 });
+    expect(hits[0]).toMatchObject({ id: 'personal-color', content: 'red' });
+    expect(hits).toHaveLength(2);
+    memory.close();
+  });
+
+  it('updates a deterministic personal memory instead of duplicating it', async () => {
+    const memory = new SqliteMemoryStore(':memory:');
+    createTables(memory);
+    const base = {
+      id: 'personal-color', type: 'text' as const, title: 'favourite colour',
+      tags: ['personal', 'preference'], createdAt: '2026-09-11T09:00:00.000Z',
+    };
+    await memory.add('user-1', { ...base, content: 'favourite colour: red' });
+    await memory.add('user-1', { ...base, content: 'favourite colour: blue', createdAt: '2026-09-11T10:00:00.000Z' });
+
+    expect(await memory.recent('user-1', 10)).toEqual([
+      expect.objectContaining({ id: 'personal-color', content: 'favourite colour: blue' }),
+    ]);
+    memory.close();
+  });
 });
 
 function createTables(memory: SqliteMemoryStore) {

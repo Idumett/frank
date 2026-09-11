@@ -24,6 +24,7 @@ import {
   validateSnapshot,
 } from '../context/contextSnapshot.js';
 import { LostAssistanceSession } from '../context/lostAssistance.js';
+import { PersonalMemorySession } from '../memory/PersonalMemorySession.js';
 import type { ProductDataPort } from '../productData/ProductDataPort.js';
 
 const TraceSchema = UserRequestSchema.shape.trace;
@@ -218,6 +219,7 @@ export async function deviceStreamRoutes(
     let activeTrace: DeviceTrace | null = null;
     let lastIntent: 'read_text' | 'describe_scene' | 'remember_this' | 'recall' | 'help' = 'help';
     let lastQuery: string | undefined;
+    let lastMemoryQuery: string | undefined;
     let pendingFrame: PendingFrame | null = null;
     let pendingTurn: PendingTurn | null = null;
     let lastReplyText: string | null = null;
@@ -227,6 +229,7 @@ export async function deviceStreamRoutes(
     let abort = new AbortController();
     let currentContext: ContextSnapshotV1 | null = null;
     const lostAssistance = productData ? new LostAssistanceSession(productData, req.userId) : null;
+    const personalMemory = productData ? new PersonalMemorySession(productData, req.userId) : null;
 
     safeSend(socket, { type: 'connected', trace: { requestId: req.id } });
 
@@ -390,8 +393,9 @@ export async function deviceStreamRoutes(
                   ),
                 );
           if (activeOperation !== operationId) return;
-          const { intent, productAction } = normalizeClassification(classified);
+          const { intent, productAction, memoryQuery } = normalizeClassification(classified);
           lastIntent = intent;
+          lastMemoryQuery = memoryQuery;
           if (intentNeedsImage(intent)) {
             const frame = await stage(requestTrace, 'evidence.select', () =>
               waitForPreparedEvidence(
@@ -522,8 +526,9 @@ export async function deviceStreamRoutes(
                 );
           // A stop/disconnect during classification invalidates this turn.
           if (activeOperation !== operationId) return;
-          const { intent, productAction } = normalizeClassification(classified);
+          const { intent, productAction, memoryQuery } = normalizeClassification(classified);
           lastIntent = intent;
+          lastMemoryQuery = memoryQuery;
           if (intentNeedsImage(lastIntent) && !frame) {
             const prepared = await stage(requestTrace, 'evidence.select', () =>
               waitForPreparedEvidence(
@@ -600,6 +605,7 @@ export async function deviceStreamRoutes(
         }
         lastIntent = 'help';
         lastQuery = undefined;
+        lastMemoryQuery = undefined;
         abort.abort();
         abort = new AbortController();
         activeOperation += 1;
@@ -634,6 +640,7 @@ export async function deviceStreamRoutes(
           pendingTurn = null;
           inFlight = false;
           lastIntent = 'help';
+          lastMemoryQuery = undefined;
           await observability.fail(
             requestTrace.requestId,
             'Fresh camera evidence was not received',
@@ -813,11 +820,17 @@ export async function deviceStreamRoutes(
               }
             : undefined,
           query: lastIntent === 'recall' ? lastQuery : undefined,
+          memoryQuery: lastMemoryQuery,
           requestedAt: new Date().toISOString(),
           context: selectedContext,
         });
 
-        const assistance = lostAssistance?.handle(
+        const personalMemoryResult = await personalMemory?.handle(
+          productAction,
+          requestTrace.requestId,
+          requestTrace.sessionId,
+        );
+        const assistance = personalMemoryResult ?? lostAssistance?.handle(
           utterance,
           selectedContext,
           requestTrace.requestId,
@@ -826,7 +839,7 @@ export async function deviceStreamRoutes(
         const assistantReply = assistance
           ? await stage(
               requestTrace,
-              'context.lost_assistance',
+              personalMemoryResult ? 'memory.personal_action' : 'context.lost_assistance',
               async () => ({
                 trace: requestTrace,
                 speak: assistance.speak,
@@ -935,6 +948,7 @@ export async function deviceStreamRoutes(
           inFlight = false;
           lastIntent = 'help';
           lastQuery = undefined;
+          lastMemoryQuery = undefined;
         }
       }
     }
@@ -971,6 +985,8 @@ function normalizeClassification(value: Intent | TurnClassificationV1): TurnClas
 }
 
 export function privacySafeContextUtterance(utterance: string) {
+  if (/\b(my (?:favourite|favorite|preferred|preference)|i (?:prefer|like|usually|always))\b/i.test(utterance))
+    return '[personal context]';
   return /\b(save|remember|mark|report|rename|change|update|move|correct|delete|forget|remove|resolved|home|location|place|hazard|pothole)\b/i.test(
     utterance,
   )

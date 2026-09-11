@@ -330,6 +330,7 @@ await deviceStreamRoutes(
       return {
         intent: inferIntent(utterance),
         productAction: { schemaVersion: '1' as const, action: 'none' as const },
+        memoryQuery: utterance,
       };
     }
   },

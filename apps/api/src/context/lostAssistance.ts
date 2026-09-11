@@ -262,6 +262,9 @@ export class LostAssistanceSession {
         return this.nearby(location, context);
       case 'lost_assistance':
         return this.lost(location, context);
+      case 'save_personal_memory':
+      case 'delete_personal_memory':
+        return null;
     }
   }
 

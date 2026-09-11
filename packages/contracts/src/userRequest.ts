@@ -38,6 +38,9 @@ export const UserRequestSchema = z.object({
   /** Optional query for recall/search intent */
   query: z.string().optional(),
 
+  /** Semantic retrieval terms selected for this turn without changing its intent. */
+  memoryQuery: z.string().max(200).optional(),
+
   requestedAt: IsoDateTimeSchema,
   context: SelectedContextV1Schema.optional(),
 });

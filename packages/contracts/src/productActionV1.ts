@@ -14,6 +14,15 @@ export const ProductActionKindV1Schema = z.enum([
   'where_am_i',
   'whats_nearby',
   'lost_assistance',
+  'save_personal_memory',
+  'delete_personal_memory',
+]);
+
+export const PersonalMemoryKindV1Schema = z.enum([
+  'preference',
+  'personal_fact',
+  'routine',
+  'accessibility_preference',
 ]);
 
 export const ProductActionProposalV1Schema = z
@@ -26,6 +35,9 @@ export const ProductActionProposalV1Schema = z
       .enum(['pothole', 'uneven_surface', 'obstruction', 'roadworks', 'other'])
       .optional(),
     description: z.string().trim().min(1).max(300).optional(),
+    memoryKind: PersonalMemoryKindV1Schema.optional(),
+    memorySubject: z.string().trim().min(1).max(80).optional(),
+    memoryValue: z.string().trim().min(1).max(300).optional(),
   })
   .strict()
   .superRefine((proposal, ctx) => {
@@ -39,6 +51,17 @@ export const ProductActionProposalV1Schema = z
     }
     if (proposal.action === 'save_current_hazard' && !proposal.hazardType) {
       ctx.addIssue({ code: 'custom', path: ['hazardType'], message: 'A hazard type is required' });
+    }
+    if (
+      ['save_personal_memory', 'delete_personal_memory'].includes(proposal.action) &&
+      (!proposal.memoryKind || !proposal.memorySubject ||
+        (proposal.action === 'save_personal_memory' && !proposal.memoryValue))
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['memorySubject'],
+        message: 'A personal memory kind, subject and value are required',
+      });
     }
   });
 

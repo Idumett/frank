@@ -22,6 +22,7 @@ function summarizeInput(args: { request: UserRequest; hasImage: boolean }) {
     modality: args.request.modality,
     utterance: args.request.utterance,
     query: args.request.query,
+    hasMemoryQuery: Boolean(args.request.memoryQuery),
     requestedAt: args.request.requestedAt,
     hasImage: args.hasImage,
     contextSnapshotId: args.request.context?.snapshotId,
@@ -215,7 +216,8 @@ export class FrankOrchestrator {
       });
 
       // 3) Memory hits (Jarvis mode: use memory for ANY meaningful utterance)
-      const userText = request.query?.trim() || request.utterance?.trim() || '';
+      const userText =
+        request.memoryQuery?.trim() || request.query?.trim() || request.utterance?.trim() || '';
       let memoryHits = [] as any[];
 
       if (userText) {

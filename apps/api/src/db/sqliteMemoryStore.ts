@@ -49,6 +49,16 @@ export class SqliteMemoryStore {
         @id, @type, @title, @content, @tags_json, @created_at, @media_ref, @embedding_ref,
         @request_id, @session_id, @user_id
       )
+      ON CONFLICT(user_id, id) DO UPDATE SET
+        type = excluded.type,
+        title = excluded.title,
+        content = excluded.content,
+        tags_json = excluded.tags_json,
+        created_at = excluded.created_at,
+        media_ref = excluded.media_ref,
+        embedding_ref = excluded.embedding_ref,
+        request_id = excluded.request_id,
+        session_id = excluded.session_id
     `);
 
     stmt.run({
@@ -84,8 +94,7 @@ export class SqliteMemoryStore {
     if (!q) return Promise.resolve([]);
 
     // 1) tokenize: remove punctuation, split words
-    const tokens = q
-      .replace(/[^a-z0-9\s]/g, ' ')
+    const tokens = normalizeSearchText(q)
       .split(/\s+/)
       .filter(Boolean)
       .filter((t) => t.length >= 3);
@@ -122,27 +131,24 @@ export class SqliteMemoryStore {
     const finalTokens = (keywords.length ? keywords : tokens).slice(0, 6);
     if (finalTokens.length === 0) return Promise.resolve([]);
 
-    // 3) Build SQL: OR match any token (good starter behavior)
-    // We can switch OR -> AND later stricter matching
-    const whereParts: string[] = [];
-    const params: any[] = [];
-
-    for (const t of finalTokens) {
-      whereParts.push(`LOWER(title) LIKE ? OR LOWER(content) LIKE ? OR LOWER(tags_json) LIKE ?`);
-      const like = `%${t}%`;
-      params.push(like, like, like);
-    }
-
-    const stmt = this.db.prepare(`
+    // Rank a bounded candidate set in application code. This lets a rewritten
+    // semantic query favour a matching subject without widening the result to
+    // unrelated personal facts.
+    const rows = this.db.prepare(`
       SELECT *
       FROM memory_items
-      WHERE user_id = ? AND (${whereParts.join(' OR ')})
+      WHERE user_id = ?
       ORDER BY created_at DESC
-      LIMIT ?
-    `);
+      LIMIT 500
+    `).all(userId) as any[];
 
-    const rows = stmt.all(userId, ...params, opts.limit);
-    return Promise.resolve(rows.map(rowToMemoryItem));
+    const ranked = rows
+      .map((row) => ({ row, score: relevanceScore(row, finalTokens) }))
+      .filter(({ score }) => score > 0)
+      .sort((a, b) => b.score - a.score || String(b.row.created_at).localeCompare(String(a.row.created_at)))
+      .slice(0, opts.limit)
+      .map(({ row }) => rowToMemoryItem(row));
+    return Promise.resolve(ranked);
   }
 
   delete(userId: string, ids: string[]): Promise<number> {
@@ -164,6 +170,26 @@ export class SqliteMemoryStore {
 
     return Promise.resolve(tx(ids));
   }
+}
+
+function relevanceScore(row: any, tokens: string[]) {
+  const title = normalizeSearchText(row.title);
+  const content = normalizeSearchText(row.content);
+  const tags = normalizeSearchText(safeJsonArray(row.tags_json).join(' '));
+  return tokens.reduce(
+    (score, token) =>
+      score + (title.includes(token) ? 5 : 0) + (content.includes(token) ? 3 : 0) +
+      (tags.includes(token) ? 2 : 0),
+    0,
+  );
+}
+
+function normalizeSearchText(value: unknown) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/\bcolours?\b/g, 'color')
+    .replace(/\bfavourites?\b/g, 'favorite')
+    .replace(/[^a-z0-9\s:-]/g, ' ');
 }
 
 function rowToMemoryItem(row: any): MemoryItem {
