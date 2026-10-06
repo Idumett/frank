@@ -43,8 +43,28 @@ OnUnitActiveSec=2m
 [Install]
 WantedBy=timers.target
 UNIT
+cat > /etc/systemd/system/frank-deploy.service <<UNIT
+[Unit]
+Description=Deploy a new Frank main revision
+Wants=network-online.target
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/frank-update
+UNIT
+cat > /etc/systemd/system/frank-deploy.timer <<UNIT
+[Unit]
+Description=Check Frank main for a new revision
+[Timer]
+OnBootSec=1m
+OnUnitActiveSec=2m
+RandomizedDelaySec=15s
+Persistent=true
+[Install]
+WantedBy=timers.target
+UNIT
 systemctl daemon-reload
-systemctl enable --now frank-backup.timer frank-health.timer
+systemctl enable --now frank-backup.timer frank-health.timer frank-deploy.timer
 . /etc/frank/deployment.env
 docker network inspect frank-demo >/dev/null 2>&1 || docker network create frank-demo >/dev/null
 docker volume inspect frank-caddy-data >/dev/null 2>&1 || docker volume create frank-caddy-data >/dev/null

@@ -4,10 +4,11 @@ Frank runs as **staging** on one Compute Engine VM behind Caddy at `35.242.143.7
 
 ## Update and rollback
 
-The VM deployment follows the `main` branch using a read-only GitHub deploy key. An update builds the fetched commit, starts it as a candidate, checks its local health, swaps it into service, then checks public HTTPS. The previous container remains available for one-step rollback.
+The VM deployment follows the `main` branch using a read-only GitHub deploy key. A system timer checks for a new commit every two minutes. New revisions are built as a candidate, checked locally, swapped into service, then checked over public HTTPS. Unchanged revisions are skipped and the previous container remains available for one-step rollback.
 
 ```sh
 sudo frank-update
+sudo systemctl status frank-deploy.timer
 sudo frank-rollback
 sudo frank-refresh-secrets
 ```

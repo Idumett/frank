@@ -8,6 +8,12 @@ if [[ ! -d "$repo/.git" ]]; then
   git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$repo"
 fi
 git -C "$repo" fetch --prune origin "$BRANCH"
+remote_revision=$(git -C "$repo" rev-parse "origin/$BRANCH")
+deployed_revision=$(cat /var/lib/frank/deployed-revision 2>/dev/null || true)
+if [[ "${FRANK_FORCE_DEPLOY:-0}" != "1" && -n "$deployed_revision" && "$remote_revision" == "$deployed_revision"* ]]; then
+  printf 'Already deployed %s\n' "$deployed_revision"
+  exit 0
+fi
 git -C "$repo" checkout -q "$BRANCH"
 git -C "$repo" reset --hard "origin/$BRANCH"
 revision=$(git -C "$repo" rev-parse --short=12 HEAD)
