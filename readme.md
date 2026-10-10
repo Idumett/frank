@@ -59,6 +59,33 @@ internal and product-data contracts, `packages/protocol` defines client transpor
 and `packages/providers` isolates Gemini and Google Cloud speech and vision. The
 API in `apps/api` remains a thin adapter around those boundaries.
 
+### Project map
+
+```text
+apps/api/
+  src/server.ts          Fastify entry point, auth hooks and route registration
+  src/routes/            HTTP, WebSocket, memory, product-data and diagnostics APIs
+  src/context/           Context Snapshot selection and Lost Assistance
+  src/evidence/          image intent, freshness and quality policy
+  src/productData/       persistent SQLite adapter and typed product actions
+  src/security/          tokens, ownership, limits and retention
+  src/observability/     trace, latency, incident and provider-usage storage
+  tests/                 API and integration tests
+packages/contracts/      versioned Zod domain and product-data contracts
+packages/protocol/       device WebSocket envelopes
+packages/core/           orchestration, safety policy and conversation behavior
+packages/providers/      Gemini, STT, TTS, OCR and label provider adapters
+tests/v1/                repeatable V1 behavior and failure scenarios
+scripts/                 benchmarks, provider comparisons and operational helpers
+deploy/                  Docker image and Google Cloud VM operations
+docs/                    decisions, contracts, safety and release evidence
+```
+
+When changing a shared payload, update `packages/contracts` or
+`packages/protocol` first, then update the API and every client mirror. Keep route
+files small; business rules belong in `core`, `context`, `evidence` or the typed
+data adapter.
+
 Stable prompt instructions are kept ahead of changing turn context. Conversation,
 memory and evidence are bounded, token and cache metadata are recorded, and the
 uncached Gemini path remains available. Camera analysis only runs for intents that
@@ -109,15 +136,42 @@ account recovery are a later product boundary, not an assumption made by V1.
 
 ## Local development
 
-Use the Node and pnpm versions declared by the project, then provide the Google
-provider credentials and local auth configuration described by the environment
-example.
+### Fresh checkout
+
+Install Node 24 and enable Corepack. The repository pins pnpm in `package.json`.
 
 ```sh
+corepack enable
 pnpm install
+pnpm build
 pnpm typecheck
 pnpm test:v1
 pnpm dev
+```
+
+The API listens on `http://localhost:3000` by default. Check it with
+`curl http://localhost:3000/health`. Development mode can run without an auth
+file; production deliberately refuses to start without `FRANK_AUTH_FILE`.
+
+Provider-backed speech, vision and Gemini calls require Application Default
+Credentials for the Google Cloud project and `GEMINI_API_KEY`. Common settings
+include `GCP_PROJECT_ID`, `GEMINI_MODEL`, `DB_PATH`, `TTS_CACHE_DIR`,
+`OBSERVABILITY_ENABLED`, `FRANK_TIME_ZONE`, `HOST` and `PORT`. Never commit API
+keys, bearer tokens, service-account JSON or an auth file.
+
+For authenticated local work, point `FRANK_AUTH_FILE` at JSON containing
+server-owned user IDs, SHA-256 product-token hashes and separate diagnostics-token
+hashes. The exact boundary and rotation behavior are documented in
+[the security guide](docs/security-boundary.md).
+
+### Checks to run
+
+Use this normal pre-push sequence:
+
+```sh
+pnpm build
+pnpm typecheck
+pnpm test:v1
 ```
 
 Useful validation commands include:
@@ -128,6 +182,11 @@ pnpm benchmark:gemini
 pnpm compare:vision
 ```
 
+`benchmark:gemini` and `compare:vision` may call paid providers; use them only with
+an intentional test budget. `test:v1` is deterministic and is the normal local
+gate. A failing import immediately after cloning usually means the workspace
+packages have not been built yet: run `pnpm build` before repeating the tests.
+
 The repeatable V1 set covers conversation, recall, weak evidence, empty speech,
 provider failures, cancellation, reconnection, stale frames, context conflicts,
 lost assistance and mobility safety wording. Passing automated tests does not
@@ -135,12 +194,22 @@ replace the physical-device and user validation required before broader release.
 
 ## Staging operations
 
-The VM checks the `main` branch every two minutes and applies new commits through
-staged container updates. Operators can
-update, roll back, refresh secrets, back up and verify a restore without changing
-the architecture.
+The staging server runs on the `frank-demo` Compute Engine VM in the Frank Google
+Cloud project, behind Caddy HTTPS on the configured `sslip.io` domain. Persistent
+SQLite data and the TTS cache live under `/var/lib/frank`; they are not stored in
+the container or Git repository.
+
+The VM checks `main` every two minutes. A changed revision is built as a candidate,
+health-checked locally, swapped into service and checked again through public
+HTTPS. The previous container remains available for rollback. Unchanged commits
+are skipped after deployment. Therefore, pushing directly to `main` deploys
+staging without another approval step; use a branch and pull request for unfinished
+work.
 
 ```sh
+gcloud compute ssh frank-demo --project=gen-lang-client-0124758441 --zone=europe-west2-a --tunnel-through-iap
+systemctl status frank-deploy.timer
+journalctl -u frank-deploy.service -n 100 --no-pager
 sudo frank-update
 sudo frank-rollback
 sudo frank-refresh-secrets
@@ -148,11 +217,30 @@ sudo frank-backup
 sudo frank-restore latest --verify-only
 ```
 
+`sudo frank-update` is safe to run manually and skips the current revision. Set
+`FRANK_FORCE_DEPLOY=1` only when the same commit genuinely needs rebuilding. If a
+candidate fails either health check, inspect its logs and keep or restore the last
+healthy container rather than editing persistent data by hand.
+
 SQLite and the TTS cache live on persistent storage. Daily integrity-checked
 backups are retained locally and copied to a private Cloud Storage bucket. Public
 health is checked every two minutes, failure alerts are configured, and provider
 usage can be reviewed through the protected diagnostics API. See
 [deployment operations](deploy/README.md).
+
+### Safe maintenance checklist
+
+1. Work on a branch and run the build, typecheck and V1 suite.
+2. Review schema changes against Android and iOS contract mirrors.
+3. Merge to `main`; allow up to two minutes for the VM poll.
+4. Confirm `/health`, the deployed revision and `frank-deploy.service` logs.
+5. Check protected diagnostics for new failure or latency regressions.
+6. Roll back immediately if the public health check or core scenarios regress.
+
+Do not delete `/var/lib/frank`, replace the database, print runtime secrets or put
+diagnostic credentials in the Android application. Secret values come from Secret
+Manager and the hashed auth registry; `deploy/gcp/frank-demo.env` contains
+deployment coordinates rather than provider credentials.
 
 ## Data boundary
 
