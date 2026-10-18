@@ -2,11 +2,18 @@ import { TextToSpeechClient } from '@google-cloud/text-to-speech';
 import type { TtsProvider } from './TtsProvider.js';
 import type { Trace } from '@frank/contracts';
 
-export class GoogleTtsProvider implements TtsProvider {
-  private client: TextToSpeechClient;
+type SynthesisClient = {
+  synthesizeSpeech(
+    request: Record<string, unknown>,
+    options?: { timeout?: number },
+  ): Promise<[{ audioContent?: string | Uint8Array | null }, ...unknown[]]>;
+};
 
-  constructor() {
-    this.client = new TextToSpeechClient();
+export class GoogleTtsProvider implements TtsProvider {
+  private client: SynthesisClient;
+
+  constructor(client?: SynthesisClient) {
+    this.client = client ?? (new TextToSpeechClient() as unknown as SynthesisClient);
   }
 
   async speak(args: {
@@ -30,7 +37,7 @@ export class GoogleTtsProvider implements TtsProvider {
         speakingRate: args.speakingRate,
         pitch: args.pitch,
       },
-    });
+    }, { timeout: positiveInt(process.env.TTS_PROVIDER_TIMEOUT_MS, 12_000) });
 
     const audioContent = response.audioContent;
     if (!audioContent) throw new Error('TTS: empty audioContent');
@@ -42,4 +49,9 @@ export class GoogleTtsProvider implements TtsProvider {
 
     return { audioBytes, mimeType: 'audio/mpeg' };
   }
+}
+
+function positiveInt(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }

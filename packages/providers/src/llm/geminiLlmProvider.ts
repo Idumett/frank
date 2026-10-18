@@ -117,7 +117,7 @@ For save_current_place, update_saved_place or delete_saved_place, return placeNa
         thinkingConfig: this.model.startsWith('gemini-2.5')
           ? { thinkingBudget: 0 }
           : { thinkingLevel: thinkingLevel(process.env.GEMINI_THINKING_LEVEL) },
-        httpOptions: { timeout: 10_000 },
+        httpOptions: { timeout: positiveInt(process.env.GEMINI_CLASSIFIER_TIMEOUT_MS, 9_000) },
       },
     });
     const parsed = JSON.parse(response.text ?? '{}');
@@ -151,6 +151,7 @@ For save_current_place, update_saved_place or delete_saved_place, return placeNa
         thinkingConfig: this.model.startsWith('gemini-2.5')
           ? { thinkingBudget: 0 }
           : { thinkingLevel: thinkingLevel(process.env.GEMINI_THINKING_LEVEL) },
+        httpOptions: { timeout: positiveInt(process.env.GEMINI_REPLY_TIMEOUT_MS, 20_000) },
       },
     });
 

@@ -2,11 +2,22 @@ import { ImageAnnotatorClient } from '@google-cloud/vision';
 import { PerceptionResultSchema, type PerceptionResult, type Trace } from '@frank/contracts';
 import type { VisionProvider } from './VisionProvider.js';
 
-export class GcvVisionProvider implements VisionProvider {
-  private client: ImageAnnotatorClient;
+type VisionClient = {
+  documentTextDetection(
+    request: Record<string, unknown>,
+    options?: { timeout?: number },
+  ): Promise<[any, ...unknown[]]>;
+  labelDetection(
+    request: Record<string, unknown>,
+    options?: { timeout?: number },
+  ): Promise<[any, ...unknown[]]>;
+};
 
-  constructor() {
-    this.client = new ImageAnnotatorClient();
+export class GcvVisionProvider implements VisionProvider {
+  private client: VisionClient;
+
+  constructor(client?: VisionClient) {
+    this.client = client ?? (new ImageAnnotatorClient() as unknown as VisionClient);
   }
 
   async analyzeOCR(args: {
@@ -16,7 +27,7 @@ export class GcvVisionProvider implements VisionProvider {
   }): Promise<PerceptionResult> {
     const [res] = await this.client.documentTextDetection({
       image: { content: args.imageBytes.toString('base64') },
-    });
+    }, providerOptions());
 
     const fullText = res.fullTextAnnotation?.text ?? undefined;
 
@@ -44,10 +55,10 @@ export class GcvVisionProvider implements VisionProvider {
   }): Promise<PerceptionResult> {
     const [res] = await this.client.labelDetection({
       image: { content: args.imageBytes.toString('base64') },
-    });
+    }, providerOptions());
 
     const labels =
-      res.labelAnnotations?.slice(0, 10).map((l) => ({
+      res.labelAnnotations?.slice(0, 10).map((l: { description?: string | null; score?: number | null }) => ({
         name: l.description ?? 'unknown',
         confidence: typeof l.score === 'number' ? l.score : undefined,
       })) ?? [];
@@ -63,4 +74,9 @@ export class GcvVisionProvider implements VisionProvider {
 
     return PerceptionResultSchema.parse(mapped);
   }
+}
+
+function providerOptions() {
+  const parsed = Number(process.env.VISION_PROVIDER_TIMEOUT_MS);
+  return { timeout: Number.isInteger(parsed) && parsed > 0 ? parsed : 9_000 };
 }

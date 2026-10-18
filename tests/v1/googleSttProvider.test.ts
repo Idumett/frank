@@ -4,9 +4,11 @@ import { GoogleSttProvider } from '../../packages/providers/src/stt/googleSttPro
 describe('GoogleSttProvider', () => {
   it('uses the short model first without unsupported recognition fields', async () => {
     const requests: any[] = [];
+    const options: any[] = [];
     const client = {
-      async recognize(request: any) {
+      async recognize(request: any, callOptions?: any) {
         requests.push(request);
+        options.push(callOptions);
         return [{ results: [{ alternatives: [{ transcript: 'quiet request', confidence: 0.8 }] }] }];
       },
     };
@@ -27,6 +29,7 @@ describe('GoogleSttProvider', () => {
     expect(requests[0].config.model).toBe('short');
     expect(requests[0].config.denoiserConfig).toBeUndefined();
     expect(requests[0].configMask).toEqual({ paths: ['*'] });
+    expect(options).toEqual([{ timeout: 4500 }]);
   });
 
   it('retries an empty short-model result with the fallback model', async () => {

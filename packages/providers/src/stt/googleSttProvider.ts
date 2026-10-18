@@ -12,7 +12,10 @@ type RecognitionResult = {
 };
 
 type RecognitionClient = {
-  recognize(request: Record<string, unknown>): Promise<[RecognitionResult, ...unknown[]]>;
+  recognize(
+    request: Record<string, unknown>,
+    options?: { timeout?: number },
+  ): Promise<[RecognitionResult, ...unknown[]]>;
 };
 
 export class GoogleSttProvider implements SttProvider {
@@ -45,6 +48,7 @@ export class GoogleSttProvider implements SttProvider {
     languageCode?: string;
     sampleRateHertz?: number;
   }): Promise<{ transcript: string; confidence?: number }> {
+    const callOptions = { timeout: positiveInt(process.env.STT_ATTEMPT_TIMEOUT_MS, 4_500) };
     const primaryModel = process.env.GCP_STT_MODEL ?? 'short';
     const fallbackModel = process.env.GCP_STT_FALLBACK_MODEL ?? 'long';
     const models = [...new Set([primaryModel, fallbackModel])];
@@ -64,7 +68,7 @@ export class GoogleSttProvider implements SttProvider {
             },
           },
           configMask: { paths: ['*'] },
-        });
+        }, callOptions);
 
         const result = transcriptFrom(response);
         if (result.transcript) return result;
@@ -87,13 +91,18 @@ export class GoogleSttProvider implements SttProvider {
           model: process.env.GCP_STT_V1_FALLBACK_MODEL ?? 'command_and_search',
           enableAutomaticPunctuation: true,
         },
-      });
+      }, callOptions);
       return transcriptFrom(response);
     } catch (error) {
       if (lastError) throw new AggregateError([lastError, error], 'Speech recognition failed');
       throw error;
     }
   }
+}
+
+function positiveInt(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function transcriptFrom(response: RecognitionResult): {
