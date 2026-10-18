@@ -9,6 +9,18 @@ const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((dir) => fs.rmSync(dir, { recursive: true, force: true })));
 
 describe('V1 SQLite storage', () => {
+  it('uses bounded waits and low-contention runtime pragmas', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'frank-storage-'));
+    dirs.push(dir);
+    const memory = new SqliteMemoryStore(path.join(dir, 'frank.db'));
+    expect(memory.rawDb.pragma('journal_mode', { simple: true })).toBe('wal');
+    expect(memory.rawDb.pragma('busy_timeout', { simple: true })).toBe(5000);
+    expect(memory.rawDb.pragma('synchronous', { simple: true })).toBe(1);
+    expect(memory.rawDb.pragma('foreign_keys', { simple: true })).toBe(1);
+    expect(memory.rawDb.pragma('temp_store', { simple: true })).toBe(2);
+    memory.close();
+  });
+
   it('deletes every requested memory and reports the real count', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'frank-storage-'));
     dirs.push(dir);

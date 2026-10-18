@@ -2,13 +2,14 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DB_PATH } from './config.js';
+import { configureDatabase, enableWriteAheadLog } from './configureDatabase.js';
 
 export function migrate() {
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
   const db = new Database(DB_PATH);
-  db.pragma('journal_mode = WAL'); // better resilience
-  db.pragma('foreign_keys = ON');
+  enableWriteAheadLog(db);
+  configureDatabase(db);
 
   // memory_items: our primary store
   db.exec(`

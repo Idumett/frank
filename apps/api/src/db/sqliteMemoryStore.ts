@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { DB_PATH } from './config.js';
 import { MemoryItemSchema, type MemoryItem } from '@frank/contracts';
+import { configureDatabase, enableWriteAheadLog } from './configureDatabase.js';
 
 type SearchOptions = {
   limit: number;
@@ -25,8 +26,8 @@ export class SqliteMemoryStore {
     this.db = new Database(dbPath);
     this.ownsConnection = true;
 
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
+    enableWriteAheadLog(this.db);
+    configureDatabase(this.db);
   }
 
   close() {
