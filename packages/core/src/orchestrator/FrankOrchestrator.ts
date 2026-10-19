@@ -167,6 +167,26 @@ export class FrankOrchestrator {
         return true;
       };
 
+      // These reads do not depend on camera evidence. Start them together so a
+      // visual request does not pay for database work after image analysis.
+      const userText =
+        request.memoryQuery?.trim() || request.query?.trim() || request.utterance?.trim() || '';
+      const memoryLimit = userText ? positiveInt(process.env.LLM_MEMORY_HIT_LIMIT, 4) : 0;
+      const memoryHitsPromise = stage(
+        'memory.search',
+        () => this.deps.memory.search(userId, userText, memoryLimit),
+        { query: userText, limit: memoryLimit },
+      );
+      const conversationLimit = positiveInt(process.env.LLM_CONVERSATION_TURN_LIMIT, 6);
+      const conversationTurnsPromise = request.trace.sessionId
+        ? stage(
+            'conversation.get_recent',
+            () =>
+              this.deps.conversation.getRecent(userId, request.trace.sessionId!, conversationLimit),
+            { sessionId: request.trace.sessionId, limit: conversationLimit },
+          )
+        : Promise.resolve([]);
+
       let ocrRes;
       let labelsRes;
 
@@ -215,29 +235,11 @@ export class FrankOrchestrator {
         labels: labelsRes?.labels ?? [],
       });
 
-      // 3) Memory hits (Jarvis mode: use memory for ANY meaningful utterance)
-      const userText =
-        request.memoryQuery?.trim() || request.query?.trim() || request.utterance?.trim() || '';
-      let memoryHits = [] as any[];
-
-      if (userText) {
-        // If user asked anything, search memory using that text
-        const memoryLimit = positiveInt(process.env.LLM_MEMORY_HIT_LIMIT, 4);
-        memoryHits = await stage(
-          'memory.search',
-          () => this.deps.memory.search(userId, userText, memoryLimit),
-          {
-            query: userText,
-            limit: memoryLimit,
-          },
-        );
-      } else if (request.intent === 'recall') {
-        // recall with no query: just return recent-ish hits (optional)
-        memoryHits = await stage('memory.search', () => this.deps.memory.search(userId, '', 0), {
-          query: '',
-          limit: 0,
-        }); // or implement recent() and use that
-      }
+      // Both reads have been running while any quality and vision work completes.
+      const [memoryHits, conversationTurns] = await Promise.all([
+        memoryHitsPromise,
+        conversationTurnsPromise,
+      ]);
 
       // 4) Policy decision
       const policy = await stage(
@@ -320,15 +322,6 @@ export class FrankOrchestrator {
       const compactMemoryHits = memoryHits.map((m) =>
         `${m.title}: ${m.content}`.slice(0, memoryChars),
       );
-      const conversationLimit = positiveInt(process.env.LLM_CONVERSATION_TURN_LIMIT, 6);
-      const conversationTurns = request.trace.sessionId
-        ? await stage(
-            'conversation.get_recent',
-            () =>
-              this.deps.conversation.getRecent(userId, request.trace.sessionId!, conversationLimit),
-            { sessionId: request.trace.sessionId, limit: conversationLimit },
-          )
-        : [];
       const conversationChars = positiveInt(process.env.LLM_CONVERSATION_CHAR_LIMIT, 2400);
       const conversationContext = conversationTurns
         .map((turn) => `${turn.role}: ${turn.text}`)

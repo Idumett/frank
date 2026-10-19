@@ -152,6 +152,51 @@ describe('V1 orchestrator', () => {
     expect(llm.mock.calls[0][0].conversationContext).toContain('The door is ahead.');
   });
 
+  it('loads memory and conversation in parallel', async () => {
+    let started = 0;
+    let release!: () => void;
+    const bothStarted = new Promise<void>((resolve) => { release = resolve; });
+    const markStarted = async () => {
+      started += 1;
+      if (started === 2) release();
+      await bothStarted;
+    };
+    const traces = new TraceRecorder();
+    const frank = new FrankOrchestrator({
+      vision: {
+        analyzeOCR: async () => { throw new Error('unused'); },
+        analyzeLabels: async () => { throw new Error('unused'); },
+      },
+      llm: {
+        generateReply: async ({ trace, now }) => ({
+          trace,
+          speak: 'Ready.',
+          createdAt: now,
+          suggestedAction: 'none',
+        }),
+      },
+      memory: {
+        add: async () => {},
+        search: async () => { await markStarted(); return []; },
+        recent: async () => [],
+        delete: async () => 0,
+      },
+      conversation: {
+        getRecent: async () => { await markStarted(); return []; },
+        addTurn: async () => {},
+      },
+      observability: traces,
+      policy: new BasicPolicyEngine(),
+      quality: new BasicQualityGater(),
+    });
+
+    await expect(Promise.race([
+      frank.handleUserRequest({ ...request('help', 'Hello'), hasImage: false }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('reads ran sequentially')), 250)),
+    ])).resolves.toMatchObject({ speak: 'Ready.' });
+    expect(started).toBe(2);
+  });
+
   it('uses remembered information for recall', async () => {
     const memory: MemoryItem = {
       id: 'remembered-1',
