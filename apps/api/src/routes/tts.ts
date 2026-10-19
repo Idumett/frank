@@ -4,15 +4,13 @@ import { UserRequestSchema } from '@frank/contracts';
 import { withDeadline, type ObservabilityStore } from '@frank/core';
 import { TtsProvider } from '@frank/providers';
 import { observedStage } from '../observability/stage.js';
-import { ensureTtsCacheDir, readCachedTts, ttsCacheKey, writeCachedTts } from '../ttsCache.js';
+import { ttsCacheKey } from '../ttsCache.js';
 
 export async function ttsRoutes(
   app: FastifyInstance,
   tts: TtsProvider,
   observability: ObservabilityStore, claim: (userId: string, sessionId?: string) => void,
 ) {
-  ensureTtsCacheDir();
-
   app.post('/v1/tts', async (req, reply) => {
     const BodySchema = z.object({
       trace: UserRequestSchema.shape.trace,
@@ -36,33 +34,22 @@ export async function ttsRoutes(
     });
 
     try {
-      let cacheHit = true;
-      let audioBytes = await observedStage(
+      const audio = await observedStage(
         observability,
         body.trace.requestId,
-        'tts.cache_read',
-        async () => readCachedTts(key),
-      );
-
-      if (!audioBytes) {
-        cacheHit = false;
-        const audio = await observedStage(
-          observability,
-          body.trace.requestId,
+        'tts.synthesize',
+        () => withDeadline(
+          () => tts.speak({ trace: body.trace, text: body.text, languageCode: body.languageCode, voiceName: body.voiceName }),
+          15_000,
           'tts.synthesize',
-          () => withDeadline(
-            () => tts.speak({ trace: body.trace, text: body.text, languageCode: body.languageCode, voiceName: body.voiceName }),
-            15_000,
-            'tts.synthesize',
-          ),
-          { textCharacters: body.text.length },
-        );
-        audioBytes = audio.audioBytes;
-        await observedStage(observability, body.trace.requestId, 'tts.cache_write', async () => writeCachedTts(key, audioBytes!));
-      }
+        ),
+        { textCharacters: body.text.length },
+      );
+      const audioBytes = audio.audioBytes;
+      const cacheStatus = audio.cacheStatus ?? 'miss';
 
-      await observability.finish(body.trace.requestId, { audioBytes: audioBytes.length, cacheHit });
-      reply.header('x-tts-cache', cacheHit ? 'hit' : 'miss');
+      await observability.finish(body.trace.requestId, { audioBytes: audioBytes.length, cacheStatus });
+      reply.header('x-tts-cache', cacheStatus);
 
       if (body.raw) {
         reply.header('content-type', 'audio/mpeg');

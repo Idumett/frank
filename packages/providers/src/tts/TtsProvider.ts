@@ -8,5 +8,9 @@ export interface TtsProvider {
     speakingRate?: number;
     pitch?: number;
     voiceName?: string; // optional specific voice
-  }): Promise<{ audioBytes: Buffer; mimeType: string }>;
+  }): Promise<{
+    audioBytes: Buffer;
+    mimeType: string;
+    cacheStatus?: 'hit' | 'miss' | 'shared';
+  }>;
 }

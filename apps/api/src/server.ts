@@ -33,6 +33,7 @@ import { TTS_CACHE_DIR } from './ttsCache.js';
 import { SqliteProductDataAdapter } from './productData/SqliteProductDataAdapter.js';
 import { productDataRoutes } from './routes/productData.js';
 import { inferIntent } from './evidence/policy.js';
+import { CachedTtsProvider } from './tts/CachedTtsProvider.js';
 
 migrate();
 const sqlite = new SqliteMemoryStore();
@@ -60,7 +61,7 @@ const app = Fastify({
   genReqId: () => crypto.randomUUID(),
 });
 const stt = new GoogleSttProvider();
-const tts = new GoogleTtsProvider();
+const tts = new CachedTtsProvider(new GoogleTtsProvider());
 
 await app.register(sensible);
 
