@@ -11,3 +11,4 @@ export * from './ux/deviceReply.js';
 export * from './conversation/index.js';
 export * from './observability/index.js';
 export * from './utils/deadline.js';
+export * from './utils/concurrencyGate.js';

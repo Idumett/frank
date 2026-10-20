@@ -22,7 +22,7 @@ import { prefsTtsRoutes } from './routes/prefs.js';
 import { ttsVoicesRoutes } from './routes/ttsVoices.js';
 import { diagRoutes } from './routes/diag.js';
 import { GeminiLlmProvider, GoogleSttProvider, GoogleTtsProvider } from '@frank/providers';
-import { NoopObservabilityStore } from '@frank/core';
+import { ConcurrencyGate, NoopObservabilityStore } from '@frank/core';
 import { SqliteObservabilityStore } from './observability/SqliteObservabilityStore.js';
 import { observedStage } from './observability/stage.js';
 import { TokenRegistry } from './security/auth.js';
@@ -45,10 +45,17 @@ const observabilityStore =
   process.env.OBSERVABILITY_ENABLED === 'true'
     ? new SqliteObservabilityStore(sqlite.rawDb)
     : new NoopObservabilityStore();
-const intentRouter = new GeminiLlmProvider({
+const gemini = new GeminiLlmProvider({
   model: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash',
 });
-const frank = makeFrank(memoryStore, conversationStore, observabilityStore);
+const geminiGate = new ConcurrencyGate({
+  maxConcurrent: Number(process.env.GEMINI_MAX_CONCURRENCY ?? 6),
+  maxQueue: Number(process.env.GEMINI_MAX_QUEUE ?? 24),
+  queueTimeoutMs: Number(process.env.GEMINI_QUEUE_TIMEOUT_MS ?? 3_000),
+});
+const frank = makeFrank(memoryStore, conversationStore, observabilityStore, {
+  generateReply: (args) => geminiGate.run(() => gemini.generateReply(args)),
+});
 const app = Fastify({
   logger: {
     level: process.env.LOG_LEVEL ?? 'info',
@@ -326,7 +333,7 @@ await deviceStreamRoutes(
       .join(' | ')
       .slice(-2400);
     try {
-      return await intentRouter.classifyTurn(utterance, context);
+      return await geminiGate.run(() => gemini.classifyTurn(utterance, context));
     } catch {
       return {
         intent: inferIntent(utterance),

@@ -5,6 +5,7 @@ import {
   FrankOrchestrator,
   MemoryStore,
   ObservabilityStore,
+  type FrankDeps,
 } from '@frank/core';
 import { GcvVisionProvider, GeminiLlmProvider } from '@frank/providers';
 import { MemoryItem } from '@frank/contracts';
@@ -22,10 +23,13 @@ export function makeFrank(
   memoryStore: MemoryStore = defaultMemoryStore,
   conversationStore: ConversationStore,
   observabilityStore: ObservabilityStore,
+  llm: FrankDeps['llm'] = new GeminiLlmProvider({
+    model: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash',
+  }),
 ) {
   return new FrankOrchestrator({
     vision: new GcvVisionProvider(),
-    llm: new GeminiLlmProvider({ model: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash' }),
+    llm,
     memory: memoryStore,
     quality: new BasicQualityGater(),
     policy: new BasicPolicyEngine(),
