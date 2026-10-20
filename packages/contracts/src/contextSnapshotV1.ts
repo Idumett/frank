@@ -4,7 +4,14 @@ import { ConfidenceSchema, IsoDateTimeSchema, ImageQualitySchema } from './commo
 export const ContextSnapshotVersionV1Schema = z.literal('1');
 export const ContextProvenanceV1Schema = z
   .object({
-    source: z.enum(['android_system', 'android_sensor', 'android_app']),
+    source: z.enum([
+      'android_system',
+      'android_sensor',
+      'android_app',
+      'ios_system',
+      'ios_sensor',
+      'ios_app',
+    ]),
     collectedAt: IsoDateTimeSchema,
   })
   .strict();

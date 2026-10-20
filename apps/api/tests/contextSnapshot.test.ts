@@ -58,6 +58,12 @@ function snapshot(now = Date.now()) {
 }
 
 describe('Context Snapshot V1', () => {
+  it('accepts provenance from the iOS client', () => {
+    const input = snapshot() as any;
+    input.time.provenance.source = 'ios_system';
+    expect(ContextSnapshotV1Schema.parse(input).time.provenance.source).toBe('ios_system');
+  });
+
   it('preserves known, denied, unknown and conflicting signals', () => {
     const parsed = snapshot();
     expect(parsed.location.status).toBe('known');
