@@ -1,8 +1,7 @@
-import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import { expect, test } from 'vitest';
 import type { TtsProvider } from '@frank/providers';
 import { CachedTtsProvider } from '../src/tts/CachedTtsProvider.js';
 import { ttsCacheKey } from '../src/ttsCache.js';
@@ -28,11 +27,11 @@ test('coalesces identical synthesis requests and reuses the finished audio', asy
     ]);
     const third = await cached.speak({ trace, text: 'Careful, there is a step ahead.' });
 
-    assert.equal(calls, 1);
-    assert.deepEqual(new Set([first.cacheStatus, second.cacheStatus]), new Set(['miss', 'shared']));
-    assert.equal(third.cacheStatus, 'hit');
-    assert.equal(third.audioBytes.toString(), 'speech');
-    assert.deepEqual(fs.readdirSync(cacheDir).map((name) => path.extname(name)), ['.mp3']);
+    expect(calls).toBe(1);
+    expect(new Set([first.cacheStatus, second.cacheStatus])).toEqual(new Set(['miss', 'shared']));
+    expect(third.cacheStatus).toBe('hit');
+    expect(third.audioBytes.toString()).toBe('speech');
+    expect(fs.readdirSync(cacheDir).map((name) => path.extname(name))).toEqual(['.mp3']);
   } finally {
     fs.rmSync(cacheDir, { recursive: true, force: true });
   }
@@ -46,5 +45,5 @@ test('cache identity includes every setting that changes generated speech', () =
     ttsCacheKey({ ...base, pitch: 1 }),
     ttsCacheKey({ ...base, voice: 'en-GB-Neural2-A' }),
   ]);
-  assert.equal(keys.size, 4);
+  expect(keys.size).toBe(4);
 });

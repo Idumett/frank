@@ -34,6 +34,7 @@ import { SqliteProductDataAdapter } from './productData/SqliteProductDataAdapter
 import { productDataRoutes } from './routes/productData.js';
 import { inferIntent } from './evidence/policy.js';
 import { CachedTtsProvider } from './tts/CachedTtsProvider.js';
+import { ServiceLifecycle } from './lifecycle.js';
 
 migrate();
 const sqlite = new SqliteMemoryStore();
@@ -69,6 +70,7 @@ const app = Fastify({
 });
 const stt = new GoogleSttProvider();
 const tts = new CachedTtsProvider(new GoogleTtsProvider());
+const lifecycle = new ServiceLifecycle();
 
 await app.register(sensible);
 
@@ -81,8 +83,10 @@ const productRequests = new RateLimiter(Number(process.env.PRODUCT_RATE_LIMIT ??
 const streamRequests = new RateLimiter(Number(process.env.STREAM_RATE_LIMIT ?? 20), 60_000);
 
 app.addHook('onRequest', async (req, reply) => {
+  if (lifecycle.isDraining && req.url !== '/health' && req.url !== '/ready')
+    return reply.header('retry-after', '5').code(503).send({ error: 'Server is restarting' });
   req.userId = 'legacy';
-  if (!tokens || req.url === '/health' || req.url === '/privacy') return;
+  if (!tokens || req.url === '/health' || req.url === '/ready' || req.url === '/privacy') return;
   const diagnostics = req.url.startsWith('/v1/diag');
   const auth = tokens.authenticate(req.headers.authorization, diagnostics);
   if (!auth) {
@@ -126,22 +130,15 @@ async function normalizeImage(imageBytes: Buffer) {
     .toBuffer();
 }
 
-process.on('SIGINT', () => {
-  clearInterval(retentionTimer);
-  sqlite.close();
-  process.exit(0);
-});
-process.on('SIGTERM', () => {
-  clearInterval(retentionTimer);
-  sqlite.close();
-  process.exit(0);
-});
-
 app.addHook('onSend', async (req, reply) => {
   reply.header('x-request-id', req.id);
 });
 
-app.get('/health', async () => ({ ok: true }));
+app.get('/health', async () => ({ ok: true, draining: lifecycle.isDraining }));
+app.get('/ready', async (_req, reply) => {
+  if (lifecycle.isDraining) return reply.code(503).send({ ok: false, draining: true });
+  return { ok: true, draining: false };
+});
 
 app.get('/privacy', async (_req, reply) => reply
   .type('text/html; charset=utf-8')
@@ -346,6 +343,35 @@ await deviceStreamRoutes(
 
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '0.0.0.0';
+
+const shutdown = (signal: string) => {
+  app.log.info({ signal }, 'graceful_shutdown_started');
+  const hardStop = setTimeout(() => {
+    app.log.error({ signal }, 'graceful_shutdown_timed_out');
+    process.exit(1);
+  }, Number(process.env.SHUTDOWN_TIMEOUT_MS ?? 12_000));
+  hardStop.unref();
+  void lifecycle
+    .shutdown(
+      () => app.close(),
+      () => {
+        clearInterval(retentionTimer);
+        sqlite.close();
+      },
+    )
+    .then(() => {
+      clearTimeout(hardStop);
+      app.log.info({ signal }, 'graceful_shutdown_complete');
+      process.exitCode = 0;
+    })
+    .catch((error) => {
+      clearTimeout(hardStop);
+      app.log.error({ signal, errorType: error?.name }, 'graceful_shutdown_failed');
+      process.exitCode = 1;
+    });
+};
+process.once('SIGINT', () => shutdown('SIGINT'));
+process.once('SIGTERM', () => shutdown('SIGTERM'));
 
 app.listen({ port, host }).catch((err) => {
   app.log.error(err);

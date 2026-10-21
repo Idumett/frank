@@ -26,7 +26,7 @@ docker run -d --name frank-candidate --restart=no --network frank-demo \
   -v /etc/frank/secrets:/run/secrets:ro "frank-demo:$revision" >/dev/null
 healthy=false
 for _ in $(seq 1 30); do
-  if docker exec frank-candidate node -e "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)})" >/dev/null 2>&1; then
+  if docker exec frank-candidate node -e "fetch('http://127.0.0.1:3000/ready').then(r=>{if(!r.ok)process.exit(1)})" >/dev/null 2>&1; then
     healthy=true
     break
   fi
@@ -45,7 +45,7 @@ docker rename frank-candidate frank
 docker update --restart unless-stopped frank >/dev/null
 docker start frank >/dev/null
 docker restart caddy >/dev/null 2>&1 || true
-if ! curl -fsS --retry 10 --retry-delay 2 --retry-connrefused "https://$DOMAIN/health" >/dev/null; then
+if ! curl -fsS --retry 10 --retry-delay 2 --retry-connrefused "https://$DOMAIN/ready" >/dev/null; then
   docker rm -f frank >/dev/null 2>&1 || true
   if docker inspect frank-previous >/dev/null 2>&1; then
     docker rename frank-previous frank
