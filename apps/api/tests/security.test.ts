@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { hashToken, TokenRegistry } from '../src/security/auth.js';
 import { RateLimiter } from '../src/security/rateLimiter.js';
 import { SessionOwnershipError, SessionOwnershipStore } from '../src/security/sessionOwnership.js';
+import { ConnectionGate } from '../src/security/connectionGate.js';
 
 describe('online product boundary', () => {
   it('keeps product and diagnostics credentials separate and reloads rotations', () => {
@@ -15,14 +16,27 @@ describe('online product boundary', () => {
     const first = crypto.randomBytes(32).toString('hex');
     const next = crypto.randomBytes(32).toString('hex');
     const diagnostic = crypto.randomBytes(32).toString('hex');
-    fs.writeFileSync(file, JSON.stringify({ users: [{ id: 'dan', tokenHashes: [hashToken(first)] }], diagnosticTokenHashes: [hashToken(diagnostic)] }));
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        users: [{ id: 'dan', tokenHashes: [hashToken(first)] }],
+        diagnosticTokenHashes: [hashToken(diagnostic)],
+      }),
+    );
     const registry = new TokenRegistry(file);
     expect(registry.authenticate(`Bearer ${first}`)).toEqual({ kind: 'user', userId: 'dan' });
     expect(registry.authenticate(`Bearer ${first}`, true)).toBeNull();
     expect(registry.authenticate(`Bearer ${diagnostic}`)).toBeNull();
     expect(registry.authenticate(`Bearer ${diagnostic}`, true)).toEqual({ kind: 'diagnostics' });
-    fs.writeFileSync(file, JSON.stringify({ users: [{ id: 'dan', tokenHashes: [hashToken(next)] }], diagnosticTokenHashes: [hashToken(diagnostic)] }));
-    const future = new Date(Date.now() + 1000); fs.utimesSync(file, future, future);
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        users: [{ id: 'dan', tokenHashes: [hashToken(next)] }],
+        diagnosticTokenHashes: [hashToken(diagnostic)],
+      }),
+    );
+    const future = new Date(Date.now() + 1000);
+    fs.utimesSync(file, future, future);
     expect(registry.authenticate(`Bearer ${first}`)).toBeNull();
     expect(registry.authenticate(`Bearer ${next}`)).toEqual({ kind: 'user', userId: 'dan' });
     fs.rmSync(dir, { recursive: true });
@@ -30,11 +44,57 @@ describe('online product boundary', () => {
 
   it('never lets another user claim an existing session', () => {
     const db = new Database(':memory:');
-    db.exec('CREATE TABLE sessions (session_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)');
+    db.exec(
+      'CREATE TABLE sessions (session_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)',
+    );
     const sessions = new SessionOwnershipStore(db);
     sessions.claim('dan', 'phone');
     expect(() => sessions.claim('another-user', 'phone')).toThrow(SessionOwnershipError);
     db.close();
+  });
+
+  it('rejects ambiguous credentials and invalid owner identifiers', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'frank-auth-invalid-'));
+    const file = path.join(dir, 'auth.json');
+    const shared = hashToken(crypto.randomBytes(32).toString('hex'));
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        users: [{ id: 'dan', tokenHashes: [shared] }],
+        diagnosticTokenHashes: [shared],
+      }),
+    );
+    expect(() => new TokenRegistry(file).authenticate(`Bearer ${'a'.repeat(32)}`)).toThrow(
+      'assigned more than once',
+    );
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        users: [{ id: '../another-owner', tokenHashes: [shared] }],
+        diagnosticTokenHashes: [],
+      }),
+    );
+    const future = new Date(Date.now() + 1000);
+    fs.utimesSync(file, future, future);
+    expect(() => new TokenRegistry(file).authenticate(`Bearer ${'a'.repeat(32)}`)).toThrow(
+      'Invalid Frank user token entry',
+    );
+    fs.rmSync(dir, { recursive: true });
+  });
+
+  it('bounds active connections per owner and across the service', () => {
+    const gate = new ConnectionGate(2, 3);
+    const danOne = gate.acquire('dan');
+    const danTwo = gate.acquire('dan');
+    const helen = gate.acquire('helen');
+    expect(danOne).not.toBeNull();
+    expect(danTwo).not.toBeNull();
+    expect(gate.acquire('dan')).toBeNull();
+    expect(helen).not.toBeNull();
+    expect(gate.acquire('another-user')).toBeNull();
+    danOne?.release();
+    danOne?.release();
+    expect(gate.acquire('another-user')).not.toBeNull();
   });
 
   it('returns a retry time after the request allowance is spent', () => {

@@ -60,9 +60,41 @@ describe('V1 device stream', () => {
       '[context data command]',
     );
     expect(privacySafeContextUtterance('Where am I?')).toBe('Where am I?');
-    expect(privacySafeContextUtterance('My favourite colour is red')).toBe(
-      '[personal context]',
+    expect(privacySafeContextUtterance('My favourite colour is red')).toBe('[personal context]');
+  });
+
+  it('binds one WebSocket connection to one owned session', async () => {
+    const app = Fastify();
+    apps.push(app);
+    const claimed: string[] = [];
+    await deviceStreamRoutes(
+      app,
+      {} as any,
+      {} as any,
+      {} as any,
+      new TraceRecorder(),
+      (_userId, sessionId) => {
+        if (sessionId) claimed.push(sessionId);
+      },
     );
+    await app.ready();
+    const socket = await app.injectWS('/v1/device/stream');
+    const messages = new MessageQueue(socket);
+    socket.send(
+      JSON.stringify({
+        type: 'hello',
+        trace: { requestId: 'hello-session-one', sessionId: 'session-one' },
+      }),
+    );
+    expect(await messages.next()).toMatchObject({ type: 'ready' });
+    socket.send(
+      JSON.stringify({
+        type: 'hello',
+        trace: { requestId: 'hello-session-two', sessionId: 'session-two' },
+      }),
+    );
+    expect(await messages.next()).toMatchObject({ type: 'error', code: 'SESSION_MISMATCH' });
+    expect(claimed).toEqual(['session-one']);
   });
 
   it('stores a natural personal preference before confirming it', async () => {
@@ -72,7 +104,11 @@ describe('V1 device stream', () => {
     const saved: any[] = [];
     await deviceStreamRoutes(
       app,
-      { handleUserRequest: async () => { throw new Error('LLM should not confirm a write'); } } as any,
+      {
+        handleUserRequest: async () => {
+          throw new Error('LLM should not confirm a write');
+        },
+      } as any,
       { transcribe: async () => ({ transcript: 'My favourite colour is red' }) } as any,
       { speak: async () => ({ audioBytes: Buffer.from('audio'), mimeType: 'audio/mpeg' }) } as any,
       traces,
@@ -83,25 +119,36 @@ describe('V1 device stream', () => {
         intent: 'help',
         memoryQuery: 'favorite colour color clothing preference red',
         productAction: {
-          schemaVersion: '1', action: 'save_personal_memory', memoryKind: 'preference',
-          memorySubject: 'favourite colour', memoryValue: 'red',
+          schemaVersion: '1',
+          action: 'save_personal_memory',
+          memoryKind: 'preference',
+          memorySubject: 'favourite colour',
+          memoryValue: 'red',
         },
       }),
     );
     await app.ready();
     const socket = await app.injectWS('/v1/device/stream');
     const messages = new MessageQueue(socket);
-    socket.send(JSON.stringify({
-      type: 'hello', trace: { requestId: 'connection-memory', sessionId: 'session-memory' },
-    }));
+    socket.send(
+      JSON.stringify({
+        type: 'hello',
+        trace: { requestId: 'connection-memory', sessionId: 'session-memory' },
+      }),
+    );
     await messages.next();
-    socket.send(JSON.stringify({
-      type: 'audio', trace: { requestId: 'request-memory', sessionId: 'session-memory' },
-      mime: 'audio/wav', audioBase64: 'a'.repeat(20),
-    }));
+    socket.send(
+      JSON.stringify({
+        type: 'audio',
+        trace: { requestId: 'request-memory', sessionId: 'session-memory' },
+        mime: 'audio/wav',
+        audioBase64: 'a'.repeat(20),
+      }),
+    );
     expect((await messages.next()).type).toBe('transcript');
     expect(await messages.next()).toMatchObject({
-      type: 'meta', reply: { speak: "Got it. I'll remember that your favourite colour is red." },
+      type: 'meta',
+      reply: { speak: "Got it. I'll remember that your favourite colour is red." },
     });
     expect((await messages.next()).type).toBe('audio');
     expect(saved).toEqual([
@@ -126,8 +173,11 @@ describe('V1 device stream', () => {
         handleUserRequest: async (request: any) => {
           receivedQuery = request.memoryQuery;
           return {
-            trace: request.trace, speak: 'Try a red shirt.', createdAt: new Date().toISOString(),
-            suggestedAction: 'none', groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 1 },
+            trace: request.trace,
+            speak: 'Try a red shirt.',
+            createdAt: new Date().toISOString(),
+            suggestedAction: 'none',
+            groundedIn: { usedOcr: false, usedLabels: false, usedMemoryHits: 1 },
           };
         },
       } as any,
@@ -138,21 +188,29 @@ describe('V1 device stream', () => {
       undefined,
       undefined,
       async () => ({
-        intent: 'help', memoryQuery: 'clothing color style preference',
+        intent: 'help',
+        memoryQuery: 'clothing color style preference',
         productAction: { schemaVersion: '1', action: 'none' },
       }),
     );
     await app.ready();
     const socket = await app.injectWS('/v1/device/stream');
     const messages = new MessageQueue(socket);
-    socket.send(JSON.stringify({
-      type: 'hello', trace: { requestId: 'connection-recommendation', sessionId: 'session-recommendation' },
-    }));
+    socket.send(
+      JSON.stringify({
+        type: 'hello',
+        trace: { requestId: 'connection-recommendation', sessionId: 'session-recommendation' },
+      }),
+    );
     await messages.next();
-    socket.send(JSON.stringify({
-      type: 'audio', trace: { requestId: 'request-recommendation', sessionId: 'session-recommendation' },
-      mime: 'audio/wav', audioBase64: 'a'.repeat(20),
-    }));
+    socket.send(
+      JSON.stringify({
+        type: 'audio',
+        trace: { requestId: 'request-recommendation', sessionId: 'session-recommendation' },
+        mime: 'audio/wav',
+        audioBase64: 'a'.repeat(20),
+      }),
+    );
     await messages.next();
     await messages.next();
     await messages.next();

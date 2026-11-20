@@ -35,6 +35,7 @@ import { productDataRoutes } from './routes/productData.js';
 import { inferIntent } from './evidence/policy.js';
 import { CachedTtsProvider } from './tts/CachedTtsProvider.js';
 import { ServiceLifecycle } from './lifecycle.js';
+import { ConnectionGate } from './security/connectionGate.js';
 
 migrate();
 const sqlite = new SqliteMemoryStore();
@@ -81,6 +82,10 @@ const tokens = authFile ? new TokenRegistry(authFile) : null;
 const authFailures = new RateLimiter(20, 60_000);
 const productRequests = new RateLimiter(Number(process.env.PRODUCT_RATE_LIMIT ?? 90), 60_000);
 const streamRequests = new RateLimiter(Number(process.env.STREAM_RATE_LIMIT ?? 20), 60_000);
+const streamConnections = new ConnectionGate(
+  Number(process.env.STREAM_MAX_CONNECTIONS_PER_USER ?? 3),
+  Number(process.env.STREAM_MAX_CONNECTIONS ?? 64),
+);
 
 app.addHook('onRequest', async (req, reply) => {
   if (lifecycle.isDraining && req.url !== '/health' && req.url !== '/ready')
@@ -140,9 +145,13 @@ app.get('/ready', async (_req, reply) => {
   return { ok: true, draining: false };
 });
 
-app.get('/privacy', async (_req, reply) => reply
-  .type('text/html; charset=utf-8')
-  .send(`<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Frank privacy notice</title><style>body{font:18px/1.55 system-ui;max-width:48rem;margin:auto;padding:2rem;color:#172033}h1,h2{line-height:1.2}</style><main><h1>Frank privacy notice</h1><p>Last updated 4 September 2026.</p><p>Frank is an accessibility assistant in private testing. It processes voice recordings and, only when relevant, camera images and device context to answer a request. Location is optional and is used for current context and user-confirmed places or hazards.</p><h2>Storage</h2><p>Temporary audio and camera evidence are processed for the request and are not retained as ordinary history. Conversation context is retained for one day, diagnostic traces for 14 days, cached speech for seven days, and inactive sessions for 30 days. User-confirmed memories, places and hazards remain until they expire or the user deletes them. Raw location history is not stored.</p><h2>Providers</h2><p>Requests may be processed by Google Cloud Speech-to-Text, Vision, Text-to-Speech and Gemini. Operational data is stored in the Frank Google Cloud project.</p><h2>Control and safety</h2><p>Camera and location access are optional and can be revoked in Android settings. Frank is not a navigation, emergency or road-crossing service. Private testers can request access to, correction of, or deletion of their test data through the testing contact shown on the Google Play listing.</p></main></html>`));
+app.get('/privacy', async (_req, reply) =>
+  reply
+    .type('text/html; charset=utf-8')
+    .send(
+      `<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Frank privacy notice</title><style>body{font:18px/1.55 system-ui;max-width:48rem;margin:auto;padding:2rem;color:#172033}h1,h2{line-height:1.2}</style><main><h1>Frank privacy notice</h1><p>Last updated 4 September 2026.</p><p>Frank is an accessibility assistant in private testing. It processes voice recordings and, only when relevant, camera images and device context to answer a request. Location is optional and is used for current context and user-confirmed places or hazards.</p><h2>Storage</h2><p>Temporary audio and camera evidence are processed for the request and are not retained as ordinary history. Conversation context is retained for one day, diagnostic traces for 14 days, cached speech for seven days, and inactive sessions for 30 days. User-confirmed memories, places and hazards remain until they expire or the user deletes them. Raw location history is not stored.</p><h2>Providers</h2><p>Requests may be processed by Google Cloud Speech-to-Text, Vision, Text-to-Speech and Gemini. Operational data is stored in the Frank Google Cloud project.</p><h2>Control and safety</h2><p>Camera and location access are optional and can be revoked in Android settings. Frank is not a navigation, emergency or road-crossing service. Private testers can request access to, correction of, or deletion of their test data through the testing contact shown on the Google Play listing.</p></main></html>`,
+    ),
+);
 
 const claim = (userId: string, sessionId?: string) => productData.claimSession(userId, sessionId);
 const runRetention = () => {
@@ -150,10 +159,7 @@ const runRetention = () => {
   productData.applyRetention();
 };
 runRetention();
-const retentionTimer = setInterval(
-  runRetention,
-  24 * 60 * 60 * 1000,
-);
+const retentionTimer = setInterval(runRetention, 24 * 60 * 60 * 1000);
 retentionTimer.unref();
 
 app.post('/v1/analyze', async (req) => {
@@ -339,6 +345,7 @@ await deviceStreamRoutes(
       };
     }
   },
+  (userId) => streamConnections.acquire(userId),
 );
 
 const port = Number(process.env.PORT ?? 3000);
@@ -346,10 +353,13 @@ const host = process.env.HOST ?? '0.0.0.0';
 
 const shutdown = (signal: string) => {
   app.log.info({ signal }, 'graceful_shutdown_started');
-  const hardStop = setTimeout(() => {
-    app.log.error({ signal }, 'graceful_shutdown_timed_out');
-    process.exit(1);
-  }, Number(process.env.SHUTDOWN_TIMEOUT_MS ?? 12_000));
+  const hardStop = setTimeout(
+    () => {
+      app.log.error({ signal }, 'graceful_shutdown_timed_out');
+      process.exit(1);
+    },
+    Number(process.env.SHUTDOWN_TIMEOUT_MS ?? 12_000),
+  );
   hardStop.unref();
   void lifecycle
     .shutdown(

@@ -26,6 +26,7 @@ import {
 import { LostAssistanceSession } from '../context/lostAssistance.js';
 import { PersonalMemorySession } from '../memory/PersonalMemorySession.js';
 import type { ProductDataPort } from '../productData/ProductDataPort.js';
+import type { ConnectionLease } from '../security/connectionGate.js';
 
 const TraceSchema = UserRequestSchema.shape.trace;
 
@@ -126,6 +127,7 @@ export async function deviceStreamRoutes(
     userId: string,
     sessionId?: string,
   ) => Promise<Intent | TurnClassificationV1> = async (text) => inferIntent(text),
+  acquireConnection: (userId: string) => ConnectionLease | null = () => ({ release: () => {} }),
 ) {
   await app.register(websocket, { options: { maxPayload: 12 * 1024 * 1024 } });
 
@@ -215,6 +217,17 @@ export async function deviceStreamRoutes(
   });
 
   app.get('/v1/device/stream', { websocket: true }, (socket, req) => {
+    const connectionLease = acquireConnection(req.userId);
+    if (!connectionLease) {
+      safeSend(socket, {
+        type: 'error',
+        message: 'Too many active connections',
+        code: 'CONNECTION_LIMITED',
+      });
+      socket.close(1013, 'Connection limit reached');
+      return;
+    }
+    socket.once('close', connectionLease.release);
     let connectionTrace: DeviceTrace | null = null;
     let activeTrace: DeviceTrace | null = null;
     let lastIntent: 'read_text' | 'describe_scene' | 'remember_this' | 'recall' | 'help' = 'help';
@@ -254,6 +267,15 @@ export async function deviceStreamRoutes(
       if (m.type === 'ping') return safeSend(socket, { type: 'pong', t: m.t });
 
       if (m.type === 'hello') {
+        if (connectionTrace?.sessionId && connectionTrace.sessionId !== m.trace.sessionId) {
+          safeSend(socket, {
+            type: 'error',
+            message: 'This connection is already bound to another session',
+            code: 'SESSION_MISMATCH',
+          });
+          socket.close(1008, 'Session mismatch');
+          return;
+        }
         try {
           claim(req.userId, m.trace.sessionId);
         } catch {
@@ -308,6 +330,14 @@ export async function deviceStreamRoutes(
             trace: m.trace,
             message: 'No camera evidence was requested for this turn.',
             code: 'UNEXPECTED_FRAME',
+          });
+        }
+        if (m.trace.sessionId !== connectionTrace.sessionId) {
+          return safeSend(socket, {
+            type: 'error',
+            trace: m.trace,
+            message: 'That camera frame belongs to another session.',
+            code: 'SESSION_MISMATCH',
           });
         }
         if (m.frameRequestId !== pendingTurn.frameRequestId) {
@@ -830,12 +860,9 @@ export async function deviceStreamRoutes(
           requestTrace.requestId,
           requestTrace.sessionId,
         );
-        const assistance = personalMemoryResult ?? lostAssistance?.handle(
-          utterance,
-          selectedContext,
-          requestTrace.requestId,
-          productAction,
-        );
+        const assistance =
+          personalMemoryResult ??
+          lostAssistance?.handle(utterance, selectedContext, requestTrace.requestId, productAction);
         const assistantReply = assistance
           ? await stage(
               requestTrace,
@@ -985,7 +1012,11 @@ function normalizeClassification(value: Intent | TurnClassificationV1): TurnClas
 }
 
 export function privacySafeContextUtterance(utterance: string) {
-  if (/\b(my (?:favourite|favorite|preferred|preference)|i (?:prefer|like|usually|always))\b/i.test(utterance))
+  if (
+    /\b(my (?:favourite|favorite|preferred|preference)|i (?:prefer|like|usually|always))\b/i.test(
+      utterance,
+    )
+  )
     return '[personal context]';
   return /\b(save|remember|mark|report|rename|change|update|move|correct|delete|forget|remove|resolved|home|location|place|hazard|pothole)\b/i.test(
     utterance,
