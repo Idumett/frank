@@ -10,4 +10,4 @@ Auth configuration rejects duplicate owner IDs, unsafe owner identifiers and any
 
 Audio and camera frames are processed in memory and are not persisted. Conversation turns are kept for one day, diagnostics for 14 days, synthesized speech cache files for seven days and inactive session claims for 30 days. Memories and preferences remain until the user deletes them or the product adds an account deletion flow. The cleanup runs at startup and once a day.
 
-Ordinary request logs redact authorization and request bodies. They record IDs, sizes, timings and outcomes. Full trace details remain available only through the protected diagnostics routes.
+Ordinary request logs redact authorization and request bodies. They record IDs, sizes, timings and outcomes without session cooldown keys or client-selected memory IDs. Protected diagnostics retain operational counts, timing, actions and provider usage, while spoken text, transcripts, queries, coordinates and provider error details are redacted before they reach SQLite. Stopping a turn or closing its socket also removes pending camera evidence for that session.

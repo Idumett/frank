@@ -155,11 +155,18 @@ app.get('/privacy', async (_req, reply) =>
 
 const claim = (userId: string, sessionId?: string) => productData.claimSession(userId, sessionId);
 const runRetention = () => {
-  applyRetention(sqlite.rawDb, TTS_CACHE_DIR);
-  productData.applyRetention();
+  const storage = applyRetention(sqlite.rawDb, TTS_CACHE_DIR);
+  const product = productData.applyRetention();
+  app.log.info({ storage, product }, 'retention_cleanup_completed');
 };
 runRetention();
-const retentionTimer = setInterval(runRetention, 24 * 60 * 60 * 1000);
+const retentionTimer = setInterval(() => {
+  try {
+    runRetention();
+  } catch (error: any) {
+    app.log.error({ errorType: error?.name ?? 'Error' }, 'retention_cleanup_failed');
+  }
+}, 24 * 60 * 60 * 1000);
 retentionTimer.unref();
 
 app.post('/v1/analyze', async (req) => {
@@ -212,7 +219,7 @@ app.post('/v1/analyze', async (req) => {
   if (!cd.allowed) {
     const now = new Date().toISOString();
 
-    req.log.info({ requestId: req.id, cooldownKey: key, waitMs: cd.waitMs }, 'cooldown_blocked');
+    req.log.info({ requestId: req.id, waitMs: cd.waitMs }, 'cooldown_blocked');
 
     const reply = AssistantReplySchema.parse({
       trace: body.trace,
@@ -271,7 +278,7 @@ app.post('/v1/memory/add', async (req) => {
   // store in SQLite
   await memoryStore.add(req.userId, body.item);
 
-  req.log.info({ requestId: req.id, memoryId: body.item.id }, 'memory_add');
+  req.log.info({ requestId: req.id }, 'memory_add');
   return { trace: body.trace, ok: true };
 });
 

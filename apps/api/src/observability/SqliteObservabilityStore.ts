@@ -1,4 +1,5 @@
 import type { ObservabilityStore, RequestTraceRecord, TraceFilters, TraceStage } from '@frank/core';
+import { privacySafeTraceError, privacySafeTraceValue } from '../security/tracePrivacy.js';
 
 type DbLike = {
   prepare: (sql: string) => any;
@@ -8,8 +9,11 @@ export class SqliteObservabilityStore implements ObservabilityStore {
   constructor(private db: DbLike) {}
 
   async start(record: RequestTraceRecord): Promise<void> {
-    const owner = this.db.prepare('SELECT user_id FROM request_traces WHERE request_id = ?').get(record.requestId);
-    if (owner && owner.user_id !== (record.userId ?? 'legacy')) throw new Error('Request ID already belongs to another user');
+    const owner = this.db
+      .prepare('SELECT user_id FROM request_traces WHERE request_id = ?')
+      .get(record.requestId);
+    if (owner && owner.user_id !== (record.userId ?? 'legacy'))
+      throw new Error('Request ID already belongs to another user');
     this.db
       .prepare(
         `
@@ -62,10 +66,10 @@ export class SqliteObservabilityStore implements ObservabilityStore {
         record.startedAt,
         record.endedAt ?? null,
         record.totalMs ?? null,
-        safeJson(record.input),
-        record.output ? safeJson(record.output) : null,
-        record.error ?? null,
-        safeJson(record.stages ?? []),
+        safeJson(privacySafeTraceValue(record.input)),
+        record.output ? safeJson(privacySafeTraceValue(record.output)) : null,
+        record.error ? privacySafeTraceError(record.error) : null,
+        safeJson(privacySafeTraceValue(record.stages ?? [])),
       );
   }
 
@@ -82,7 +86,7 @@ export class SqliteObservabilityStore implements ObservabilityStore {
           WHERE request_id = ?
         `,
       )
-      .run(safeJson(stage), requestId);
+      .run(safeJson(privacySafeTraceValue(stage)), requestId);
   }
 
   async finish(requestId: string, output: unknown): Promise<void> {
@@ -107,7 +111,7 @@ export class SqliteObservabilityStore implements ObservabilityStore {
           WHERE request_id = ?
         `,
       )
-      .run(endedAt, totalMs, safeJson(output), requestId);
+      .run(endedAt, totalMs, safeJson(privacySafeTraceValue(output)), requestId);
   }
 
   async fail(requestId: string, error: string): Promise<void> {
@@ -132,7 +136,7 @@ export class SqliteObservabilityStore implements ObservabilityStore {
           WHERE request_id = ?
         `,
       )
-      .run(endedAt, totalMs, error, requestId);
+      .run(endedAt, totalMs, privacySafeTraceError(error), requestId);
   }
 
   getRecent(filters: TraceFilters = {}): RequestTraceRecord[] {
@@ -195,16 +199,18 @@ export class SqliteObservabilityStore implements ObservabilityStore {
       }
     }
 
-    const stages = [...stageMap.entries()].map(([name, value]) => ({
-      name,
-      calls: value.durations.length,
-      failures: value.failures,
-      minMs: percentile(value.durations, 0),
-      avgMs: average(value.durations),
-      p50Ms: percentile(value.durations, 0.5),
-      p95Ms: percentile(value.durations, 0.95),
-      maxMs: percentile(value.durations, 1),
-    })).sort((a, b) => b.avgMs - a.avgMs);
+    const stages = [...stageMap.entries()]
+      .map(([name, value]) => ({
+        name,
+        calls: value.durations.length,
+        failures: value.failures,
+        minMs: percentile(value.durations, 0),
+        avgMs: average(value.durations),
+        p50Ms: percentile(value.durations, 0.5),
+        p95Ms: percentile(value.durations, 0.95),
+        maxMs: percentile(value.durations, 1),
+      }))
+      .sort((a, b) => b.avgMs - a.avgMs);
 
     const completed = traces.filter((trace) => trace.endedAt);
     const failed = traces.filter((trace) => trace.error);
@@ -217,9 +223,10 @@ export class SqliteObservabilityStore implements ObservabilityStore {
       completed: completed.length,
       inFlight: traces.length - completed.length,
       failures: failed.length,
-      successRate: completed.length === 0
-        ? null
-        : Math.round(((completed.length - failed.length) / completed.length) * 1000) / 10,
+      successRate:
+        completed.length === 0
+          ? null
+          : Math.round(((completed.length - failed.length) / completed.length) * 1000) / 10,
       totalMs: {
         avg: average(totals),
         p50: percentile(totals, 0.5),
@@ -236,25 +243,48 @@ export class SqliteObservabilityStore implements ObservabilityStore {
     for (const trace of traces) {
       for (const stage of trace.stages) {
         const data = stage.data as { incident?: unknown } | undefined;
-        const policyCode = stage.name.startsWith('policy.') ? stage.name.slice('policy.'.length) : undefined;
+        const policyCode = stage.name.startsWith('policy.')
+          ? stage.name.slice('policy.'.length)
+          : undefined;
         const code = typeof data?.incident === 'string' ? data.incident : policyCode;
-        if (code && ['road_crossing', 'movement_safety', 'turn_by_turn', 'context_location_denied', 'context_location_stale', 'context_location_conflicting', 'context_location_missing', 'context_location_inaccurate', 'route_deviation', 'route_deviation_without_location', 'route_deviation_poor_gps'].includes(code))
+        if (
+          code &&
+          [
+            'road_crossing',
+            'movement_safety',
+            'turn_by_turn',
+            'context_location_denied',
+            'context_location_stale',
+            'context_location_conflicting',
+            'context_location_missing',
+            'context_location_inaccurate',
+            'route_deviation',
+            'route_deviation_without_location',
+            'route_deviation_poor_gps',
+          ].includes(code)
+        )
           incidents.push({ requestId: trace.requestId, startedAt: trace.startedAt, code });
       }
     }
-    const counts = Object.fromEntries([...new Set(incidents.map((item) => item.code))].sort().map((code) => [code, incidents.filter((item) => item.code === code).length]));
+    const counts = Object.fromEntries(
+      [...new Set(incidents.map((item) => item.code))]
+        .sort()
+        .map((code) => [code, incidents.filter((item) => item.code === code).length]),
+    );
     return { total: incidents.length, counts, recent: incidents.slice(0, 50) };
   }
 
   getProviderUsage(filters: TraceFilters = {}) {
     const traces = this.getRecent({ ...filters, limit: Math.min(filters.limit ?? 200, 200) });
-    const usage = traces.flatMap((trace) => trace.stages)
+    const usage = traces
+      .flatMap((trace) => trace.stages)
       .filter((stage) => stage.name === 'llm.usage')
       .map((stage) => stage.data as Record<string, unknown> | undefined);
-    const sum = (key: string) => usage.reduce(
-      (total, item) => total + (typeof item?.[key] === 'number' ? item[key] as number : 0),
-      0,
-    );
+    const sum = (key: string) =>
+      usage.reduce(
+        (total, item) => total + (typeof item?.[key] === 'number' ? (item[key] as number) : 0),
+        0,
+      );
     const promptTokens = sum('promptTokens');
     const outputTokens = sum('outputTokens');
     const cachedTokens = sum('cachedTokens');
@@ -270,10 +300,13 @@ export class SqliteObservabilityStore implements ObservabilityStore {
         cached: cachedTokens,
       },
       cacheHits: usage.filter((item) => item?.cacheHit === true).length,
-      estimatedUsd: Math.round((
-        (Math.max(0, promptTokens - cachedTokens) * promptUsdPerMillion) +
-        (outputTokens * outputUsdPerMillion)
-      ) / 1_000_000 * 1_000_000) / 1_000_000,
+      estimatedUsd:
+        Math.round(
+          ((Math.max(0, promptTokens - cachedTokens) * promptUsdPerMillion +
+            outputTokens * outputUsdPerMillion) /
+            1_000_000) *
+            1_000_000,
+        ) / 1_000_000,
       pricing: { promptUsdPerMillion, outputUsdPerMillion },
     };
   }

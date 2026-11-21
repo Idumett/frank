@@ -152,6 +152,19 @@ export async function deviceStreamRoutes(
     preparedEvidence.delete(key);
     return existing.frame;
   };
+  const clearSessionEvidence = (userId: string, sessionId: string | undefined) => {
+    const prefix = `${userId}:${sessionId ?? 'none'}:`;
+    for (const [key, existing] of preparedEvidence) {
+      if (!key.startsWith(prefix)) continue;
+      clearTimeout(existing.expires);
+      preparedEvidence.delete(key);
+    }
+    for (const [key, timeout] of rejectedEvidence) {
+      if (!key.startsWith(prefix)) continue;
+      clearTimeout(timeout);
+      rejectedEvidence.delete(key);
+    }
+  };
   const waitForPreparedEvidence = async (key: string) => {
     const deadline = Date.now() + positiveInt(process.env.PREPARED_EVIDENCE_WAIT_MS, 500);
     while (Date.now() < deadline) {
@@ -606,7 +619,9 @@ export async function deviceStreamRoutes(
             message:
               preparationStage === 'intent'
                 ? 'I could not work out what information is needed. Please try again.'
-                : (error?.message ?? 'STT failed'),
+                : error?.message === 'No speech recognized'
+                  ? 'No speech recognized'
+                  : 'Frank could not process that recording. Please try again.',
             code: preparationStage === 'intent' ? 'INTENT_FAIL' : 'STT_FAIL',
           });
         } finally {
@@ -640,6 +655,11 @@ export async function deviceStreamRoutes(
         abort = new AbortController();
         activeOperation += 1;
         inFlight = false;
+        pendingFrame = null;
+        if (activeTrace)
+          discardEvidence(
+            evidenceKey(req.userId, connectionTrace?.sessionId, activeTrace.requestId),
+          );
         if (activeTrace) await observability.fail(activeTrace.requestId, 'Stopped by client');
         safeSend(socket, { type: 'stopped', trace: activeTrace });
       }
@@ -652,6 +672,8 @@ export async function deviceStreamRoutes(
       }
       abort.abort();
       activeOperation += 1;
+      pendingFrame = null;
+      clearSessionEvidence(req.userId, connectionTrace?.sessionId);
       if (inFlight && activeTrace) {
         await observability.fail(activeTrace.requestId, 'Client disconnected');
       }
@@ -966,7 +988,7 @@ export async function deviceStreamRoutes(
           safeSend(socket, {
             type: 'error',
             trace: requestTrace,
-            message: error?.message ?? 'Unknown error',
+            message: 'Frank could not complete that request. Please try again.',
             code: 'PROCESS_FAIL',
           });
         }

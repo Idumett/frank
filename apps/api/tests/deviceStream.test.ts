@@ -703,6 +703,76 @@ describe('V1 device stream', () => {
     socket.terminate();
   });
 
+  it('clears prepared evidence when its socket session closes', async () => {
+    const app = Fastify();
+    apps.push(app);
+    const traces = new TraceRecorder();
+    await deviceStreamRoutes(
+      app,
+      {} as any,
+      { transcribe: async () => ({ transcript: 'Describe this' }) } as any,
+      {} as any,
+      traces,
+      undefined,
+      undefined,
+      undefined,
+      async () => 'describe_scene',
+    );
+    await app.ready();
+    const sessionId = 'session-disconnected';
+    const requestId = 'request-disconnected';
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: `/v1/device/evidence/${requestId}`,
+          headers: {
+            'content-type': 'image/jpeg',
+            'x-frank-session-id': sessionId,
+            'x-frank-frame-id': 'disconnected-frame',
+            'x-frank-captured-at': new Date().toISOString(),
+            'x-frank-frame-age-ms': '0',
+          },
+          payload: Buffer.from('private camera evidence'),
+        })
+      ).statusCode,
+    ).toBe(202);
+
+    const first = await app.injectWS('/v1/device/stream');
+    const firstMessages = new MessageQueue(first);
+    first.send(
+      JSON.stringify({
+        type: 'hello',
+        trace: { requestId: 'hello-disconnected', sessionId },
+      }),
+    );
+    await firstMessages.next();
+    const firstClosed = new Promise<void>((resolve) => first.once('close', () => resolve()));
+    first.terminate();
+    await firstClosed;
+
+    const second = await app.injectWS('/v1/device/stream');
+    const secondMessages = new MessageQueue(second);
+    second.send(
+      JSON.stringify({
+        type: 'hello',
+        trace: { requestId: 'hello-reconnected', sessionId },
+      }),
+    );
+    await secondMessages.next();
+    second.send(
+      JSON.stringify({
+        type: 'audio',
+        trace: { requestId, sessionId },
+        mime: 'audio/wav',
+        audioBase64: 'a'.repeat(20),
+      }),
+    );
+    expect((await secondMessages.next()).type).toBe('transcript');
+    expect(await secondMessages.next()).toMatchObject({ type: 'frame_required' });
+    second.terminate();
+  });
+
   it('reports TTS failures and repeats the last successful response', async () => {
     const app = Fastify();
     apps.push(app);
@@ -764,7 +834,7 @@ describe('V1 device stream', () => {
     expect(await messages.next()).toMatchObject({
       type: 'error',
       code: 'PROCESS_FAIL',
-      message: 'TTS unavailable',
+      message: 'Frank could not complete that request. Please try again.',
     });
     expect(traces.records.get('request-tts-fail')?.error).toBe('TTS unavailable');
     socket.terminate();

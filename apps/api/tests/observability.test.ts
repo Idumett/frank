@@ -34,8 +34,18 @@ describe('request diagnostics', () => {
       stages: [],
     });
     await Promise.all([
-      store.addStage('req-12345678', { name: 'vision.ocr', startedAt: new Date().toISOString(), durationMs: 8, ok: true }),
-      store.addStage('req-12345678', { name: 'vision.labels', startedAt: new Date().toISOString(), durationMs: 12, ok: true }),
+      store.addStage('req-12345678', {
+        name: 'vision.ocr',
+        startedAt: new Date().toISOString(),
+        durationMs: 8,
+        ok: true,
+      }),
+      store.addStage('req-12345678', {
+        name: 'vision.labels',
+        startedAt: new Date().toISOString(),
+        durationMs: 12,
+        ok: true,
+      }),
     ]);
     await store.start({
       requestId: 'req-12345678',
@@ -61,14 +71,29 @@ describe('request diagnostics', () => {
 
   it('starts clean when a completed request ID is reused', async () => {
     const { db, store } = makeStore();
-    const first = { requestId: 'req-reused1', source: 'stt' as const, startedAt: '2026-08-13T10:00:00.000Z', stages: [] };
+    const first = {
+      requestId: 'req-reused1',
+      source: 'stt' as const,
+      startedAt: '2026-08-13T10:00:00.000Z',
+      stages: [],
+    };
     await store.start(first);
-    await store.addStage(first.requestId, { name: 'stt.transcribe', startedAt: first.startedAt, durationMs: 10, ok: false, error: 'failed' });
+    await store.addStage(first.requestId, {
+      name: 'stt.transcribe',
+      startedAt: first.startedAt,
+      durationMs: 10,
+      ok: false,
+      error: 'failed',
+    });
     await store.fail(first.requestId, 'failed');
 
     await store.start({ ...first, source: 'tts', startedAt: '2026-08-13T10:01:00.000Z' });
     const trace = store.getByRequestId(first.requestId);
-    expect(trace).toMatchObject({ source: 'tts', startedAt: '2026-08-13T10:01:00.000Z', stages: [] });
+    expect(trace).toMatchObject({
+      source: 'tts',
+      startedAt: '2026-08-13T10:01:00.000Z',
+      stages: [],
+    });
     expect(trace?.endedAt).toBeUndefined();
     expect(trace?.error).toBeUndefined();
     db.close();
@@ -76,8 +101,19 @@ describe('request diagnostics', () => {
 
   it('counts failed stages and failed requests', async () => {
     const { db, store } = makeStore();
-    await store.start({ requestId: 'req-failed1', source: 'tts', startedAt: new Date().toISOString(), stages: [] });
-    await store.addStage('req-failed1', { name: 'tts.synthesize', startedAt: new Date().toISOString(), durationMs: 15, ok: false, error: 'provider down' });
+    await store.start({
+      requestId: 'req-failed1',
+      source: 'tts',
+      startedAt: new Date().toISOString(),
+      stages: [],
+    });
+    await store.addStage('req-failed1', {
+      name: 'tts.synthesize',
+      startedAt: new Date().toISOString(),
+      durationMs: 15,
+      ok: false,
+      error: 'provider down',
+    });
     await store.fail('req-failed1', 'provider down');
 
     const summary = store.getSummary();
@@ -89,13 +125,30 @@ describe('request diagnostics', () => {
 
   it('summarises context safety incidents without retaining location values', async () => {
     const { db, store } = makeStore();
-    await store.start({ requestId: 'req-context1', source: 'device_stream', startedAt: '2026-08-30T10:00:00.000Z', stages: [] });
-    await store.addStage('req-context1', { name: 'context.lost_assistance', startedAt: '2026-08-30T10:00:00.000Z', durationMs: 1, ok: true, data: { action: 'location_stale', incident: 'context_location_stale' } });
+    await store.start({
+      requestId: 'req-context1',
+      source: 'device_stream',
+      startedAt: '2026-08-30T10:00:00.000Z',
+      stages: [],
+    });
+    await store.addStage('req-context1', {
+      name: 'context.lost_assistance',
+      startedAt: '2026-08-30T10:00:00.000Z',
+      durationMs: 1,
+      ok: true,
+      data: { action: 'location_stale', incident: 'context_location_stale' },
+    });
     await store.finish('req-context1', { speak: 'Location unavailable' });
     expect(store.getContextIncidents()).toEqual({
       total: 1,
       counts: { context_location_stale: 1 },
-      recent: [{ requestId: 'req-context1', startedAt: '2026-08-30T10:00:00.000Z', code: 'context_location_stale' }],
+      recent: [
+        {
+          requestId: 'req-context1',
+          startedAt: '2026-08-30T10:00:00.000Z',
+          code: 'context_location_stale',
+        },
+      ],
     });
     expect(JSON.stringify(store.getContextIncidents())).not.toContain('latitude');
     db.close();
@@ -103,15 +156,65 @@ describe('request diagnostics', () => {
 
   it('totals provider tokens and cache hits for cost review', async () => {
     const { db, store } = makeStore();
-    await store.start({ requestId: 'req-cost123', source: 'device_stream', startedAt: '2026-09-04T10:00:00.000Z', stages: [] });
+    await store.start({
+      requestId: 'req-cost123',
+      source: 'device_stream',
+      startedAt: '2026-09-04T10:00:00.000Z',
+      stages: [],
+    });
     await store.addStage('req-cost123', {
-      name: 'llm.usage', startedAt: '2026-09-04T10:00:01.000Z', durationMs: 1, ok: true,
-      data: { promptTokens: 800, outputTokens: 100, totalTokens: 900, cachedTokens: 300, cacheHit: true },
+      name: 'llm.usage',
+      startedAt: '2026-09-04T10:00:01.000Z',
+      durationMs: 1,
+      ok: true,
+      data: {
+        promptTokens: 800,
+        outputTokens: 100,
+        totalTokens: 900,
+        cachedTokens: 300,
+        cacheHit: true,
+      },
     });
     const usage = store.getProviderUsage();
     expect(usage.window.llmCalls).toBe(1);
     expect(usage.tokens).toMatchObject({ prompt: 800, output: 100, total: 900, cached: 300 });
     expect(usage.cacheHits).toBe(1);
+    db.close();
+  });
+
+  it('redacts personal text and provider details before persisting diagnostics', async () => {
+    const { db, store } = makeStore();
+    await store.start({
+      requestId: 'req-private1',
+      source: 'device_stream',
+      startedAt: new Date().toISOString(),
+      input: {
+        utterance: 'My address is private',
+        transcript: 'Call me on a private number',
+        audioBytes: 2400,
+      },
+      stages: [],
+    });
+    await store.addStage('req-private1', {
+      name: 'provider.call',
+      startedAt: new Date().toISOString(),
+      ok: false,
+      error: 'Provider rejected Bearer super-secret-token for dan@example.com',
+      data: { text: 'private prompt', promptTokens: 42 },
+    });
+    await store.finish('req-private1', { speak: 'A private answer', audioBytes: 1200 });
+    const trace = store.getByRequestId('req-private1');
+    expect(trace?.input).toEqual({
+      utterance: '[redacted]',
+      transcript: '[redacted]',
+      audioBytes: 2400,
+    });
+    expect(trace?.output).toEqual({ speak: '[redacted]', audioBytes: 1200 });
+    expect(trace?.stages[0]).toMatchObject({
+      error: 'operation_failed',
+      data: { text: '[redacted]', promptTokens: 42 },
+    });
+    expect(JSON.stringify(trace)).not.toMatch(/private prompt|super-secret-token|dan@example\.com/);
     db.close();
   });
 });
